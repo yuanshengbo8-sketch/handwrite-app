@@ -20,12 +20,14 @@ if platform.system() == "Windows":
     args += ["--onefile", "--icon", "build_icon.ico", "--version-file", "version_info.txt"]
 elif platform.system() == "Darwin":
     args += ["--icon", "build_icon.icns", "--osx-bundle-identifier", "app.handwrite"]
-    if not (ROOT / "build_icon.icns").exists():  # make the .icns from the PNG with macOS tools
+    if not (ROOT / "build_icon.icns").exists():  # make the .icns from the 1024px PNG with macOS tools
         iconset = ROOT / "build_icon.iconset"
         iconset.mkdir(exist_ok=True)
-        for size in (16, 32, 64, 128, 256, 512):
-            subprocess.run(["sips", "-z", str(size), str(size), "build_icon_512.png", "--out",
-                            str(iconset / f"icon_{size}x{size}.png")], check=True, capture_output=True)
+        for size in (16, 32, 128, 256, 512):  # iconutil only accepts these names
+            for scale, suffix in ((1, ""), (2, "@2x")):
+                px = size * scale
+                subprocess.run(["sips", "-z", str(px), str(px), "app/ui/icon.png", "--out",
+                                str(iconset / f"icon_{size}x{size}{suffix}.png")], check=True, capture_output=True)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", "build_icon.icns"], check=True)
         shutil.rmtree(iconset)
 args.append("app/main.py")
