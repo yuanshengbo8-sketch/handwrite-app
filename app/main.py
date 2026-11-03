@@ -41,6 +41,10 @@ FONTS = [
     ("PatrickHand.ttf", "Patrick Hand", "圆润清楚"),
     ("NanumPenScript.ttf", "Nanum Pen", "细笔尖"),
     ("Caveat.ttf", "Caveat", "带点连笔"),
+    ("IndieFlower.ttf", "Indie Flower", "圆圆的大字"),
+    ("GochiHand.ttf", "Gochi Hand", "粗马克笔"),
+    ("ShadowsIntoLight.ttf", "Shadows", "瘦长快写"),
+    ("CoveredByYourGrace.ttf", "Grace", "潦草小字"),
 ]
 PREVIEW_WIDTH = 1240
 

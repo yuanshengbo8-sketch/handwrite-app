@@ -38,16 +38,30 @@ INKS = {
     "gel": (18, 18, 22),
     "red": (186, 42, 42),
     "green": (28, 96, 60),
+    "purple": (88, 44, 130),
+    "brown": (96, 62, 38),
+    "pencil": (92, 92, 98),
 }
 # Paper stock: base colour, strength of mottling, number of fibre specks per page
 TEXTURES = {
     "white": ((254, 254, 253), 0.0, 0),
     "cream": ((251, 250, 244), 0.012, 0),
     "ivory": ((248, 243, 226), 0.018, 0),
+    "yellow": ((250, 240, 190), 0.012, 0),
     "aged": ((238, 226, 196), 0.02, 40),
+    "parchment": ((232, 214, 176), 0.035, 25),
     "recycled": ((233, 230, 220), 0.015, 350),
+    "kraft": ((214, 186, 142), 0.025, 500),
+    "gray": ((226, 226, 224), 0.012, 120),
+    "bluish": ((238, 243, 250), 0.01, 0),
 }
-PAPERS = ("lined", "looseleaf", "grid", "fourline", "plain")
+# Paper layouts: left margin (mm), x-height (mm), and how the sheet is ruled
+PAPERS = ("lined", "narrow", "wide", "looseleaf", "legal", "grid", "dotted", "fourline", "squared", "plain")
+PAPER_SPECS = {
+    "lined": (25, 0.36 * 7.1), "narrow": (22, 0.36 * 6.0), "wide": (25, 0.36 * 8.7),
+    "looseleaf": (32, 0.36 * 7.1), "legal": (32, 0.36 * 7.1), "grid": (20, 2.9),
+    "dotted": (20, 2.9), "fourline": (15, 2.4), "squared": (20, 3.6), "plain": (20, 2.8),
+}
 ASCII_PUNCT = str.maketrans({
     "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'", "\u2013": "-",
     "\u2014": "-", "\u2026": "...", "\u00a0": " ", "\t": " ",
@@ -515,8 +529,7 @@ def fallbacks_for(font):
 
 def paper_spec(kind):
     """Returns (xheight, text_left, text_right) in pixels for a paper kind."""
-    margin = {"lined": 25, "looseleaf": 32, "grid": 20, "fourline": 15, "plain": 20}[kind]
-    xh = {"lined": 0.36 * 7.1, "looseleaf": 0.36 * 7.1, "grid": 2.9, "fourline": 2.4, "plain": 2.8}[kind]
+    margin, xh = PAPER_SPECS[kind]
     return xh * MM, margin * MM + 3 * MM, PAGE_W - 12 * MM
 
 
@@ -549,26 +562,38 @@ def make_paper(kind, rng, height=PAGE_H, texture="cream"):
     img, _ = paper_stock(texture, rng, (PAGE_W, height))
     d = ImageDraw.Draw(img)
     rows = []
-    if kind == "grid":
-        step, grey = 5 * MM, (196, 204, 214)
+    if kind in ("grid", "squared", "dotted"):
+        step = (10 if kind == "squared" else 5) * MM
+        grey = (196, 204, 214) if kind != "dotted" else (170, 176, 186)
+        xs = []
         x = 10 * MM
         while x < PAGE_W - 8 * MM:
-            d.line([(round(x), 0), (round(x), height)], fill=grey, width=1)
+            if kind != "dotted":
+                d.line([(round(x), 0), (round(x), height)], fill=grey, width=1)
+            xs.append(round(x))
             x += step
         y, n = 12 * MM, 0
         while y < height - 10 * MM:
-            d.line([(0, round(y)), (PAGE_W, round(y))], fill=grey, width=1)
-            if n >= 2 and n % 2 == 0 and y < height - 14 * MM:
+            if kind == "dotted":
+                for gx in xs:
+                    d.ellipse([gx - 1.5, round(y) - 1.5, gx + 1.5, round(y) + 1.5], fill=grey)
+            else:
+                d.line([(0, round(y)), (PAGE_W, round(y))], fill=grey, width=1)
+            every = 1 if kind == "squared" else 2
+            if n >= every and n % every == 0 and y < height - 14 * MM:
                 rows.append(y)
             y, n = y + step, n + 1
-    elif kind in ("lined", "looseleaf"):
+    elif kind in ("lined", "narrow", "wide", "looseleaf", "legal"):
+        pitch = {"narrow": 6.0, "wide": 8.7}.get(kind, 7.1) * MM
         y = 30 * MM
         while y < height - 12 * MM:
             d.line([(0, round(y)), (PAGE_W, round(y))], fill=RULE, width=2)
             rows.append(y)
-            y += 7.1 * MM
-        mx = round((25 if kind == "lined" else 32) * MM)
+            y += pitch
+        mx = round(PAPER_SPECS[kind][0] * MM)
         d.line([(mx, 0), (mx, height)], fill=MARGIN_RED, width=2)
+        if kind == "legal":  # the double rule of a legal pad
+            d.line([(mx - 3 * MM, 0), (mx - 3 * MM, height)], fill=MARGIN_RED, width=2)
         if kind == "looseleaf":
             r = 3 * MM
             for cy in (height * 0.18, height * 0.5, height * 0.82):

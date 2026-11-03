@@ -16,12 +16,12 @@
 
   // ---- options -------------------------------------------------------------------------------
   const OPTIONS = {
-    paper: { label: "纸张", choices: [["lined", "横线本"], ["looseleaf", "活页纸"], ["grid", "方格纸"], ["fourline", "四线三格"], ["plain", "白纸"]] },
-    texture: { label: "纸质", choices: [["white", "纯白"], ["cream", "米白"], ["ivory", "象牙"], ["aged", "泛黄旧纸"], ["recycled", "再生纸"]] },
+    paper: { label: "纸张", choices: [["lined", "横线本"], ["narrow", "窄横线"], ["wide", "宽横线"], ["looseleaf", "活页纸"], ["legal", "双线草稿纸"], ["grid", "方格纸"], ["dotted", "点阵纸"], ["fourline", "四线三格"], ["squared", "大方格"], ["plain", "白纸"]] },
+    texture: { label: "纸质", choices: [["white", "纯白"], ["cream", "米白"], ["ivory", "象牙"], ["yellow", "淡黄"], ["aged", "泛黄旧纸"], ["parchment", "羊皮纸"], ["recycled", "再生纸"], ["kraft", "牛皮纸"], ["gray", "灰纸"], ["bluish", "淡蓝"]] },
     font: { label: "字迹", choices: [] },
-    ink: { label: "笔色", choices: [["blue", "蓝", "#1e3487"], ["black", "黑", "#222228"], ["darkblue", "深蓝", "#162055"], ["blueblack", "蓝黑", "#1c2648"], ["gel", "中性黑", "#121216"], ["red", "红", "#ba2a2a"], ["green", "绿", "#1c603c"]] },
+    ink: { label: "笔色", choices: [["blue", "蓝", "#1e3487"], ["black", "黑", "#222228"], ["darkblue", "深蓝", "#162055"], ["blueblack", "蓝黑", "#1c2648"], ["gel", "中性黑", "#121216"], ["red", "红", "#ba2a2a"], ["green", "绿", "#1c603c"], ["purple", "紫", "#582c82"], ["brown", "棕", "#603e26"], ["pencil", "铅笔", "#5c5c62"]] },
     pressure: { label: "笔压", choices: [[-1, "轻"], [0, "正常"], [1, "重"]], start: 1 },
-    mess: { label: "潦草", choices: [[0.6, "1", "很工整"], [0.85, "2", "工整"], [1.0, "3", "自然"], [1.3, "4", "随意"], [1.6, "5", "潦草"]], start: 2 },
+    mess: { label: "潦草", choices: [[0.4, "1", "极工整"], [0.55, "2", "很工整"], [0.7, "3", "工整"], [0.85, "4", "较整齐"], [1.0, "5", "自然"], [1.15, "6", "放松"], [1.3, "7", "随意"], [1.5, "8", "潦草"], [1.75, "9", "很潦草"], [2.0, "10", "龙飞凤舞"]], start: 4 },
     size: { label: "字号", choices: [[0.88, "小"], [1.0, "中"], [1.12, "大"]], start: 1 },
     slant: { label: "倾斜", choices: [[-0.1, "左斜"], [0, "正"], [0.08, "微右"], [0.16, "右斜"]], start: 1 },
     letter_gap: { label: "字距", choices: [[0.93, "紧"], [1.0, "正常"], [1.08, "松"]], start: 1 },
