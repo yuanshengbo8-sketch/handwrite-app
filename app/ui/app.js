@@ -135,7 +135,11 @@
 
   // ---- files ---------------------------------------------------------------------------------
   function readFile(file) {
+    const ok = /\.(docx|pdf|txt|md)$/i.test(file.name);
+    if (!ok) { toast("只支持 Word (.docx)、PDF 和 .txt 文件"); return; }
+    if (!file.size) { toast("读不到文件内容，请先把它保存到电脑上再拖进来"); return; }
     const reader = new FileReader();
+    reader.onerror = () => toast("读不到这个文件，试试「打开文件」按钮");
     reader.onload = async () => {
       const b64 = reader.result.split(",")[1];
       $("spinner-text").textContent = "正在读取…";
@@ -163,6 +167,7 @@
     e.preventDefault(); dragDepth = 0; $("drop-overlay").classList.add("hidden");
     const f = e.dataTransfer.files[0];
     if (f) readFile(f);
+    else toast("这里没收到文件：请从文件夹或桌面拖入，聊天软件里的文件要先保存");
   });
 
   // ---- identity & export ---------------------------------------------------------------------
