@@ -3,18 +3,16 @@
   const $ = (id) => document.getElementById(id);
 
   // ---- bridge --------------------------------------------------------------------------------
+  // Everything goes over the local HTTP server; only the native save dialogs use the JS bridge.
+  const DIALOGS = new Set(["export_pdf", "export_pngs"]);
   const api = new Proxy({}, {
     get: (_, name) => async (...args) => {
-      if (window.pywebview && window.pywebview.api) return window.pywebview.api[name](...args);
+      if (DIALOGS.has(name) && window.pywebview && window.pywebview.api) return window.pywebview.api[name](...args);
       const r = await fetch("/api/" + name, { method: "POST", body: JSON.stringify(args) });
       return r.json();
     },
   });
-  const ready = new Promise((res) => {
-    if (window.pywebview && window.pywebview.api) res();
-    else window.addEventListener("pywebviewready", res, { once: true });
-    setTimeout(res, 800); // browser mode: no event ever fires
-  });
+  const ready = Promise.resolve();
 
   // ---- options -------------------------------------------------------------------------------
   const OPTIONS = {
@@ -169,7 +167,7 @@
 
   // ---- identity & export ---------------------------------------------------------------------
   $("btn-code").addEventListener("click", async () => {
-    state.code = await api.new_code();
+    state.code = (await api.new_code()).code;
     $("code").textContent = state.code;
     scheduleRender(0);
   });
@@ -177,7 +175,7 @@
   $("btn-export").addEventListener("click", async () => {
     const r = await api.export_pdf(state.fileName + "-手写.pdf");
     if (r.saved) toast("已保存：" + r.saved);
-    else if (r.download) { const a = document.createElement("a"); a.href = r.download; a.download = state.fileName + "-手写.pdf"; a.click(); }
+    else if (r.download) { const a = document.createElement("a"); a.href = r.download + "?t=" + Date.now(); a.download = state.fileName + "-手写.pdf"; a.click(); }
     else if (r.error) toast(r.error);
   });
 

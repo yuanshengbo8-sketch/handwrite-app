@@ -731,7 +731,7 @@ def render(blocks, font, paper, ink, seed, mess, size=1.0, slips=0.0, scan=False
 
 
 def save_pdf(pages, path):
-    pages[0].save(path, save_all=True, append_images=pages[1:], resolution=DPI)
+    pages[0].save(path, "PDF", save_all=True, append_images=pages[1:], resolution=DPI)
 
 
 def compare(font_dir, out, ink, seed):
