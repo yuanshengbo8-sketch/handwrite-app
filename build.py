@@ -17,7 +17,7 @@ args = [
     "--paths", "app",
 ]
 if platform.system() == "Windows":
-    args += ["--onefile", "--icon", "build_icon.ico"]
+    args += ["--onefile", "--icon", "build_icon.ico", "--version-file", "version_info.txt"]
 elif platform.system() == "Darwin":
     args += ["--icon", "build_icon.icns", "--osx-bundle-identifier", "app.handwrite"]
     if not (ROOT / "build_icon.icns").exists():  # make the .icns from the PNG with macOS tools
