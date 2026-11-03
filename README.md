@@ -10,13 +10,27 @@ Runs entirely offline.
 
 ## 下载
 
-**Windows**：到 [Releases](https://github.com/yuanshengbo8-sketch/handwrite-app/releases/latest) 下载 `Handwrite.exe`，双击即用，不用安装。
+到 [Releases](https://github.com/yuanshengbo8-sketch/handwrite-app/releases/latest) 下载对应的文件：
 
-**macOS**：暂时没有现成的安装包，可以按下面「从源码运行」自己跑。
+| 电脑 | 下载 |
+|---|---|
+| Windows 10 / 11 | `Handwrite.exe`，双击即用，不用安装 |
+| Mac（M1 / M2 / M3 / M4 芯片） | `Handwrite-macOS-AppleSilicon.zip` |
+| Mac（Intel 芯片，大约 2020 年以前） | `Handwrite-macOS-Intel.zip` |
+
+不知道 Mac 是哪种芯片：点左上角苹果 →「关于本机」，"芯片"写 Apple M 开头的选 AppleSilicon，"处理器"写 Intel 的选 Intel。
+
+**Mac 首次打开**：解压后把 Handwrite 拖进「应用程序」。因为没有付费签名，第一次双击会提示"无法验证开发者"：
+打开「系统设置 → 隐私与安全性」，往下拉找到 Handwrite，点「仍要打开」。
+如果提示"已损坏，无法打开"，在「终端」里运行一次下面这行再打开：
+
+```bash
+xattr -cr /Applications/Handwrite.app
+```
 
 ## 使用
 
-1. 双击 `Handwrite.exe`。
+1. 打开 Handwrite。
 2. 把文件拖进窗口，或点「打开文件」。
 3. 右侧用 ‹ › 调：10 种纸张、10 种纸质、10 款字迹、10 种笔色、潦草程度 1–10，还有笔压、字号、倾斜、字距、词距、涂改痕迹、扫描感。
 4. 「换一种笔迹」生成一套新的书写习惯（每个字母固定的倾斜和大小），「重新排一版」换一种排布。
@@ -26,7 +40,8 @@ Runs entirely offline.
 `x^2` 上标，`H_{2}O` 下标，`\frac{1}{n}` 叠式分数，`\sum_{i=1}^{n}` 带上下限的 Σ，`\hat{x}` `\bar{x}` 帽子和横线。
 
 首次打开时 Windows 会提示「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」。
-这是因为安装包没有花钱签名，不是病毒；不放心的话可以从源码自己打包。
+这是因为安装包没有花钱签名，不是病毒；不放心的话可以从源码自己打包，
+或者看 [Actions](https://github.com/yuanshengbo8-sketch/handwrite-app/actions) 里公开的构建过程。
 第一次启动要解压 2–3 秒，等窗口出现再拖文件。
 
 ## 从源码运行
