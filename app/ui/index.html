@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handwrite</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Handwrite</div>
+  <div class="segmented" id="view-switch">
+    <button data-view="preview" class="on">预览</button>
+    <button data-view="text">文字</button>
+  </div>
+  <div class="bar-right">
+    <button class="pill ghost" id="btn-open">打开文件</button>
+    <button class="pill primary" id="btn-export" disabled>导出 PDF</button>
+  </div>
+</header>
+
+<main class="stage">
+  <section class="canvas" id="canvas">
+    <div class="empty" id="empty">
+      <div class="empty-icon">✎</div>
+      <h1>把作业拖到这里</h1>
+      <p>支持 Word (.docx)、PDF 和 .txt<br>一切都在你的电脑上完成，不会上传</p>
+      <button class="pill primary" id="btn-open-2">选择文件</button>
+    </div>
+
+    <div class="viewer hidden" id="viewer">
+      <div class="page-wrap">
+        <img id="page" alt="预览">
+        <div class="spinner hidden" id="spinner"><div class="ring"></div><span id="spinner-text">正在书写…</span></div>
+      </div>
+      <div class="pager">
+        <button class="round" id="prev">‹</button>
+        <span id="page-label">1 / 1</span>
+        <button class="round" id="next">›</button>
+      </div>
+    </div>
+
+    <div class="editor hidden" id="editor">
+      <textarea id="text" spellcheck="false" placeholder="在这里粘贴或修改要写的内容。
+# 开头是标题；空行空一行；行首空格缩进；x^2 上标；H_{2}O 下标；\frac{1}{n} 分数。"></textarea>
+      <div class="editor-hint">改完切回「预览」就会重新书写</div>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="group">
+      <div class="group-title">纸张</div>
+      <div class="stepper" data-key="paper"></div>
+      <div class="stepper" data-key="texture"></div>
+    </div>
+    <div class="group">
+      <div class="group-title">笔</div>
+      <div class="stepper" data-key="font"></div>
+      <div class="stepper" data-key="ink"></div>
+      <div class="stepper" data-key="pressure"></div>
+    </div>
+    <div class="group">
+      <div class="group-title">写法</div>
+      <div class="stepper" data-key="mess"></div>
+      <div class="stepper" data-key="size"></div>
+      <div class="stepper" data-key="slant"></div>
+      <div class="stepper" data-key="letter_gap"></div>
+      <div class="stepper" data-key="word_gap"></div>
+      <div class="stepper" data-key="slips"></div>
+    </div>
+    <div class="group">
+      <div class="group-title">成品</div>
+      <div class="stepper" data-key="scan"></div>
+    </div>
+    <div class="group identity">
+      <div class="group-title">笔迹</div>
+      <div class="code-row">
+        <span class="code" id="code">····-··</span>
+        <button class="pill small" id="btn-code">换一种笔迹</button>
+      </div>
+      <button class="pill small ghost wide" id="btn-shuffle">重新排一版</button>
+      <div class="hint">笔迹 ID 决定每个字母的固定习惯，同学之间各不相同。</div>
+    </div>
+  </aside>
+</main>
+
+<div class="drop-overlay hidden" id="drop-overlay"><div>松开，开始书写</div></div>
+<div class="toast hidden" id="toast"></div>
+<input type="file" id="file-input" accept=".docx,.pdf,.txt,.md" hidden>
+<script src="app.js"></script>
+</body>
+</html>

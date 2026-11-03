@@ -1,0 +1,204 @@
+/* Handwrite UI. Talks to Python through window.pywebview.api in the app, or /api/* in a browser. */
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  // ---- bridge --------------------------------------------------------------------------------
+  const api = new Proxy({}, {
+    get: (_, name) => async (...args) => {
+      if (window.pywebview && window.pywebview.api) return window.pywebview.api[name](...args);
+      const r = await fetch("/api/" + name, { method: "POST", body: JSON.stringify(args) });
+      return r.json();
+    },
+  });
+  const ready = new Promise((res) => {
+    if (window.pywebview && window.pywebview.api) res();
+    else window.addEventListener("pywebviewready", res, { once: true });
+    setTimeout(res, 800); // browser mode: no event ever fires
+  });
+
+  // ---- options -------------------------------------------------------------------------------
+  const OPTIONS = {
+    paper: { label: "纸张", choices: [["lined", "横线本"], ["looseleaf", "活页纸"], ["grid", "方格纸"], ["fourline", "四线三格"], ["plain", "白纸"]] },
+    texture: { label: "纸质", choices: [["white", "纯白"], ["cream", "米白"], ["ivory", "象牙"], ["aged", "泛黄旧纸"], ["recycled", "再生纸"]] },
+    font: { label: "字迹", choices: [] },
+    ink: { label: "笔色", choices: [["blue", "蓝", "#1e3487"], ["black", "黑", "#222228"], ["darkblue", "深蓝", "#162055"], ["blueblack", "蓝黑", "#1c2648"], ["gel", "中性黑", "#121216"], ["red", "红", "#ba2a2a"], ["green", "绿", "#1c603c"]] },
+    pressure: { label: "笔压", choices: [[-1, "轻"], [0, "正常"], [1, "重"]], start: 1 },
+    mess: { label: "潦草", choices: [[0.6, "1", "很工整"], [0.85, "2", "工整"], [1.0, "3", "自然"], [1.3, "4", "随意"], [1.6, "5", "潦草"]], start: 2 },
+    size: { label: "字号", choices: [[0.88, "小"], [1.0, "中"], [1.12, "大"]], start: 1 },
+    slant: { label: "倾斜", choices: [[-0.1, "左斜"], [0, "正"], [0.08, "微右"], [0.16, "右斜"]], start: 1 },
+    letter_gap: { label: "字距", choices: [[0.93, "紧"], [1.0, "正常"], [1.08, "松"]], start: 1 },
+    word_gap: { label: "词距", choices: [[0.85, "紧"], [1.0, "正常"], [1.2, "松"]], start: 1 },
+    slips: { label: "涂改", choices: [[0, "无"], [1.5, "偶尔"], [4, "常有"]], start: 1 },
+    scan: { label: "扫描感", choices: [[0, "关", "打印用"], [1, "轻", "像认真拍的"], [2, "重", "像随手拍的"]], start: 0 },
+  };
+  const state = { index: {}, code: "", seed: 1, text: "", pages: [], page: 0, fileName: "作业" };
+
+  function buildSteppers() {
+    document.querySelectorAll(".stepper").forEach((el) => {
+      const key = el.dataset.key, opt = OPTIONS[key];
+      state.index[key] = opt.start || 0;
+      el.innerHTML = `<span class="label">${opt.label}</span>
+        <span class="ctl"><button class="arrow" data-d="-1">‹</button><span class="val"></span><button class="arrow" data-d="1">›</button></span>`;
+      el.querySelectorAll(".arrow").forEach((b) => b.addEventListener("click", () => step(key, +b.dataset.d)));
+      paint(key);
+    });
+  }
+  function paint(key) {
+    const el = document.querySelector(`.stepper[data-key="${key}"] .val`);
+    const choice = OPTIONS[key].choices[state.index[key]];
+    if (!choice) { el.textContent = "…"; return; }
+    const [, name, extra] = choice;
+    const swatch = key === "ink" ? `<span class="swatch" style="background:${extra}"></span>` : "";
+    const note = key !== "ink" && extra ? `<small>${extra}</small>` : "";
+    el.innerHTML = `<span>${swatch}${name}</span>${note}`;
+  }
+  function step(key, d) {
+    const n = OPTIONS[key].choices.length;
+    state.index[key] = (state.index[key] + d + n) % n;
+    paint(key);
+    scheduleRender();
+  }
+  function currentOpts() {
+    const o = { code: state.code, seed: state.seed };
+    for (const key of Object.keys(OPTIONS)) {
+      const choice = OPTIONS[key].choices[state.index[key]];
+      if (choice) o[key] = choice[0];
+    }
+    return o;
+  }
+
+  // ---- rendering -----------------------------------------------------------------------------
+  let timer = null, rendering = false, pending = false, progressTimer = null;
+  function scheduleRender(delay = 350) {
+    if (!state.text.trim()) return;
+    clearTimeout(timer);
+    timer = setTimeout(render, delay);
+  }
+  let settingsLoaded = null;
+  async function render() {
+    if (rendering) { pending = true; return; }
+    rendering = true;
+    await settingsLoaded;
+    const img = $("page");
+    img.classList.add("dim");
+    $("spinner").classList.remove("hidden");
+    $("spinner-text").textContent = "正在书写…";
+    progressTimer = setInterval(async () => {
+      const p = await api.progress();
+      if (p.pages) $("spinner-text").textContent = `正在书写… 第 ${p.pages + 1} 页`;
+    }, 600);
+    try {
+      const r = await api.render(state.text, currentOpts());
+      if (r.error) toast("出错了：" + r.error);
+      else if (!r.stale) {
+        state.pages = r.pages;
+        state.page = Math.min(state.page, Math.max(0, r.pages.length - 1));
+        showPage();
+        $("btn-export").disabled = r.pages.length === 0;
+      }
+    } finally {
+      clearInterval(progressTimer);
+      rendering = false;
+      img.classList.remove("dim");
+      $("spinner").classList.add("hidden");
+      if (pending) { pending = false; render(); }
+    }
+  }
+  function showPage() {
+    const n = state.pages.length;
+    $("viewer").classList.toggle("hidden", n === 0 && view !== "text");
+    if (n) $("page").src = state.pages[state.page];
+    $("page-label").textContent = n ? `${state.page + 1} / ${n}` : "–";
+    $("prev").disabled = state.page <= 0;
+    $("next").disabled = state.page >= n - 1;
+  }
+  $("prev").addEventListener("click", () => { state.page--; showPage(); });
+  $("next").addEventListener("click", () => { state.page++; showPage(); });
+  document.addEventListener("keydown", (e) => {
+    if (view !== "preview" || !state.pages.length) return;
+    if (e.key === "ArrowLeft" && state.page > 0) { state.page--; showPage(); }
+    if (e.key === "ArrowRight" && state.page < state.pages.length - 1) { state.page++; showPage(); }
+  });
+
+  // ---- views ---------------------------------------------------------------------------------
+  let view = "preview";
+  function setView(v) {
+    view = v;
+    document.querySelectorAll("#view-switch button").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+    const changed = v === "preview" && $("text").value !== state.text;
+    if (changed) { state.text = $("text").value; state.page = 0; }
+    const has = !!state.text.trim();
+    $("empty").classList.toggle("hidden", has || v === "text");
+    $("editor").classList.toggle("hidden", v !== "text");
+    $("viewer").classList.toggle("hidden", v !== "preview" || !has);
+    if (changed) scheduleRender(0);
+  }
+  document.querySelectorAll("#view-switch button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+
+  // ---- files ---------------------------------------------------------------------------------
+  function readFile(file) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = reader.result.split(",")[1];
+      $("spinner-text").textContent = "正在读取…";
+      const r = await api.load_file(file.name, b64);
+      if (r.error) { toast("读不了这个文件：" + r.error); return; }
+      state.text = r.text;
+      state.fileName = file.name.replace(/\.[^.]+$/, "");
+      $("text").value = r.text;
+      state.page = 0;
+      setView("preview");
+      scheduleRender(0);
+    };
+    reader.readAsDataURL(file);
+  }
+  const pick = () => $("file-input").click();
+  $("btn-open").addEventListener("click", pick);
+  $("btn-open-2").addEventListener("click", pick);
+  $("file-input").addEventListener("change", (e) => { if (e.target.files[0]) readFile(e.target.files[0]); e.target.value = ""; });
+
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; $("drop-overlay").classList.remove("hidden"); });
+  window.addEventListener("dragover", (e) => { e.preventDefault(); });
+  window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop-overlay").classList.add("hidden"); } });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault(); dragDepth = 0; $("drop-overlay").classList.add("hidden");
+    const f = e.dataTransfer.files[0];
+    if (f) readFile(f);
+  });
+
+  // ---- identity & export ---------------------------------------------------------------------
+  $("btn-code").addEventListener("click", async () => {
+    state.code = await api.new_code();
+    $("code").textContent = state.code;
+    scheduleRender(0);
+  });
+  $("btn-shuffle").addEventListener("click", () => { state.seed = Math.floor(Math.random() * 1e6) + 1; scheduleRender(0); });
+  $("btn-export").addEventListener("click", async () => {
+    const r = await api.export_pdf(state.fileName + "-手写.pdf");
+    if (r.saved) toast("已保存：" + r.saved);
+    else if (r.download) { const a = document.createElement("a"); a.href = r.download; a.download = state.fileName + "-手写.pdf"; a.click(); }
+    else if (r.error) toast(r.error);
+  });
+
+  let toastTimer = null;
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg; t.classList.remove("hidden");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
+  }
+
+  // ---- start ---------------------------------------------------------------------------------
+  buildSteppers();
+  settingsLoaded = (async () => {
+    await ready;
+    const s = await api.settings();
+    OPTIONS.font.choices = s.fonts.map((f) => [f.file, f.name, f.note]);
+    state.index.font = 0;
+    paint("font");
+    state.code = s.code; state.seed = s.seed;
+    $("code").textContent = s.code;
+  })();
+  setView("preview");
+})();
