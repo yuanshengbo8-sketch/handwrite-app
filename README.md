@@ -6,7 +6,7 @@
 Drop a Word, PDF or text file; get pages that look hand-written with a ballpoint pen.
 Runs entirely offline.
 
-![三种不同设置的效果](docs/demo.png)
+![英文、中文和不同纸笔设置的效果](docs/demo.png)
 
 ## 下载
 
