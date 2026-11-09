@@ -46,6 +46,12 @@ FONTS = [
     ("ShadowsIntoLight.ttf", "Shadows", "瘦长快写"),
     ("CoveredByYourGrace.ttf", "Grace", "潦草小字"),
 ]
+# Chinese hands (SIL OFL fonts); the first is the default
+ZH_FONTS = [
+    ("LongCang.ttf", "龙藏体", "行楷钢笔字"),
+    ("ZhiMangXing.ttf", "智莽行", "快写行书"),
+    ("ZCOOLKuaiLe.ttf", "站酷快乐体", "圆圆的大字"),
+]
 PREVIEW_WIDTH = 1240
 
 
@@ -121,14 +127,24 @@ class Api:
             import pymupdf
             doc = pymupdf.open(stream=raw, filetype="pdf")
             text = "\n".join(line for page in doc for line in page.get_text().splitlines())
+            text = engine.join_cjk_lines(text)  # Chinese paragraphs come out broken at every printed line
         else:
-            text = raw.decode("utf-8", errors="replace")
+            # Chinese .txt files saved on Windows are often GBK rather than UTF-8
+            for encoding in ("utf-8-sig", "gb18030"):
+                try:
+                    text = raw.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                text = raw.decode("utf-8", errors="replace")
         self.text = text
         return {"text": text}
 
     def settings(self):
         return {
             "fonts": [{"file": f, "name": n, "note": c} for f, n, c in FONTS],
+            "zh_fonts": [{"file": f, "name": n, "note": c} for f, n, c in ZH_FONTS],
             "code": new_code(),
             "seed": random.randrange(1, 10 ** 6),
             "platform": sys.platform,
@@ -149,6 +165,8 @@ class Api:
         o = dict(opts)
         o["habit_seed"] = code_to_seed(o.pop("code", "AAAA-AA"))
         o.pop("font", None)
+        zh = o.get("zh_font")
+        o["zh_font"] = str(FONT_DIR / (zh if zh in {f for f, _, _ in ZH_FONTS} else ZH_FONTS[0][0]))
         self.job_dir = job_dir
         count = self.pool.submit(render_job, text, o, str(font), str(job_dir)).result()
         if job != self.job:

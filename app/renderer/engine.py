@@ -17,6 +17,7 @@ import argparse
 import math
 import random
 import re
+import zlib
 from pathlib import Path
 
 from fontTools.ttLib import TTFont
@@ -73,7 +74,44 @@ MARKS = (SUP, SUB, HAT, BAR)
 SLIP = "\x05"  # a word starting with this is a false start: written, then scribbled out
 # Stacked objects inside a word: FRAC num SEP den END, or SUM lower SEP upper END
 FRAC, SUM, SEP, END = "\x06", "\x07", "\x0e", "\x0f"
+INS = "\x10"  # a word starting with this was forgotten and squeezed in above the line with a caret
+GLUE = "\x11"  # a word ending with this is followed by no space (Chinese characters, mixed runs)
+CONTROL = MARKS + (SLIP, FRAC, SUM, SEP, END, INS, GLUE)
 SUB_SCALE = 0.72  # size of superscripts and subscripts
+# Chinese: a character is written about this many x-heights tall, so it fills a ruled row the
+# way it does in a school exercise book.
+CJK_HEIGHT = 1.75
+CJK_PUNCT_CLOSE = set("，。、；：？！）》」』】〉”’…—～·")
+CJK_PUNCT_OPEN = set("（《「『【〈“‘")
+# Characters a hurried writer mixes up, for the occasional wrong character that gets crossed out
+CJK_CONFUSE = [
+    "己已巳", "未末", "拨拔", "侯候", "戊戌戍", "即既", "在再", "的得地", "做作", "像象", "那哪",
+    "他她它", "以已", "带戴", "克刻", "副幅", "制治", "历厉", "辨辩辫", "竟竞", "梁粱", "账帐",
+    "园圆", "清请情晴", "测侧", "峰锋蜂", "坐座", "密蜜", "暴爆", "须需", "练炼", "接按", "复夏",
+    "未末", "日曰", "人入八", "土士", "大太犬", "王玉主", "折拆", "外处", "问间", "买卖", "贝见",
+    "到倒", "幸辛", "进近", "应因", "情倩", "提题", "具其", "该咳", "识织职", "观现", "经径",
+]
+CJK_COMMON = ("的一是了不在有人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能"
+              "下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实"
+              "加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间"
+              "样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军"
+              "很情者最立代想已通并提直题程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流"
+              "路级少图山统接知较将组见计别手角期根论运农指几九区强放决西被干做必战先回则任取据处府")
+# Messiness levels 1-10 as the writer's overall looseness (mess). Level 2 is what used to be the
+# loosest setting; each level above it is clearly scruffier than the one before.
+LEVEL_MESS = {1: 1.3, 2: 2.0, 3: 2.5, 4: 3.0, 5: 3.5, 6: 4.0, 7: 4.6, 8: 5.2, 9: 5.9, 10: 6.6}
+
+
+def is_cjk(ch):
+    o = ord(ch)
+    return (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF or 0xF900 <= o <= 0xFAFF
+            or 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF or 0x2E80 <= o <= 0x2FDF
+            or 0x20000 <= o <= 0x2FFFF or ch in CJK_PUNCT_CLOSE or ch in CJK_PUNCT_OPEN)
+
+
+def is_hanzi(ch):
+    o = ord(ch)
+    return 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF or 0xF900 <= o <= 0xFAFF or 0x20000 <= o <= 0x2FFFF
 # Letters that end with a stroke on the right in a print hand, which may run into the next one
 JOIN_FROM = set("adehiklmnut")
 SUP_MAP = dict(zip("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b\u207c\u207d\u207e\u207f\u2071",
@@ -81,6 +119,19 @@ SUP_MAP = dict(zip("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079
 SUB_MAP = dict(zip("\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089\u208a\u208b\u208c\u208d\u208e",
                    "0123456789+-=()"))
 FALLBACK_FONTS = ("PatrickHand.ttf", "Kalam.ttf")
+CJK_FONTS = ("LongCang.ttf", "ZhiMangXing.ttf", "ZCOOLKuaiLe.ttf")  # bundled Chinese hands
+# The faster, running form of a Chinese hand. A hurried writer slips into it for some characters
+# (and always the same ones), the way people write 的 or 是 in running script when rushing.
+CJK_CURSIVE = {"LongCang.ttf": "ZhiMangXing.ttf"}
+# Characters a font draws in their traditional form; they are taken from the next font instead
+CJK_SKIP = {"LongCang.ttf": set("时将")}
+# Last resort for rare characters the bundled Chinese fonts lack: a Kai (brush-pen) or plain
+# system font, so a character never comes out blank.
+CJK_SYSTEM_FALLBACKS = ("C:/Windows/Fonts/simkai.ttf", "C:/Windows/Fonts/msyh.ttc",
+                        "/System/Library/Fonts/Supplemental/Kaiti.ttc",
+                        "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/STHeiti Light.ttc",
+                        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc")
 SYSTEM_FALLBACKS = ("C:/Windows/Fonts/segoepr.ttf",  # Segoe Print has Greek letters
                     "/System/Library/Fonts/Supplemental/Arial.ttf",  # macOS: plain but complete
                     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
@@ -97,8 +148,27 @@ def mark(text, kind):
     return "".join(kind + c if kind and not c.isspace() else c for c in text)
 
 
+def _near_cjk(text, i):
+    """Whether the character at i stands next to Chinese text (skipping spaces and quotes)."""
+    for step in (-1, 1):
+        j = i + step
+        while 0 <= j < len(text) and (text[j].isspace() or text[j] in "“”‘’…—"):
+            j += step
+        if 0 <= j < len(text) and is_hanzi(text[j]):
+            return True
+    return False
+
+
 def normalize(text):
-    text = text.translate(ASCII_PUNCT)
+    # curly quotes, dashes and ellipses stay as they are in Chinese text, where the Chinese font
+    # writes them; next to Latin text they become the plain marks every handwriting font has
+    out = []
+    for i, c in enumerate(text):
+        if c in "“”‘’…—" and _near_cjk(text, i):
+            out.append(c)
+        else:
+            out.append(c.translate(ASCII_PUNCT))
+    text = "".join(out)
     return "".join(SUP + SUP_MAP[c] if c in SUP_MAP else SUB + SUB_MAP[c] if c in SUB_MAP else c
                    for c in text)
 
@@ -106,17 +176,34 @@ def normalize(text):
 class Face:
     """A font scaled so its lowercase x is xheight pixels tall, with glyphs cached as 3x masks."""
 
-    def __init__(self, path, xheight):
+    def __init__(self, path, xheight, cjk=False):
         self.path = str(path)
-        self.cmap = set(TTFont(self.path).getBestCmap())
-        probe = ImageFont.truetype(self.path, 200)
-        self.em = xheight / -probe.getbbox("x", anchor="ls")[1] * 200
+        self.cjk = cjk
+        self.cmap = set(TTFont(self.path, fontNumber=0, lazy=True).getBestCmap())
+        self.cmap -= {ord(c) for c in CJK_SKIP.get(Path(self.path).name, ())}
+        probe = self.font_at(200)
+        # a Chinese font is sized by its characters (CJK_HEIGHT x-heights tall) and shifted so they
+        # stand on the line; a Latin font by its lowercase x
+        self.shift, self.xh = 0.0, xheight
+        if cjk:
+            ref = next((c for c in "国田口" if ord(c) in self.cmap), None)
+            if ref:
+                _, t, _, b = probe.getbbox(ref, anchor="ls")
+                self.em = CJK_HEIGHT * xheight / (b - t) * 200
+                self.shift = -(b / 200 * self.em) - 0.04 * xheight
+            else:
+                self.em = xheight / 0.5
+        else:
+            self.em = xheight / -probe.getbbox("x", anchor="ls")[1] * 200
         self.fonts = {}
         self.cache = {}
 
+    def font_at(self, size):
+        return ImageFont.truetype(self.path, size, index=0)
+
     def font(self, scale):
         if scale not in self.fonts:
-            self.fonts[scale] = ImageFont.truetype(self.path, max(4, round(self.em * scale * SS)))
+            self.fonts[scale] = self.font_at(max(4, round(self.em * scale * SS)))
         return self.fonts[scale]
 
     def glyph(self, ch, scale=1.0):
@@ -130,8 +217,28 @@ class Face:
             if r > l and b > t:
                 mask = Image.new("L", (r - l + 4, b - t + 4), 0)
                 ImageDraw.Draw(mask).text((2 - l, 2 - t), ch, font=font, fill=255, anchor="ls")
-            self.cache[key] = (mask, 2 - l, 2 - t, font.getlength(ch) / SS,
-                               (l / SS, t / SS, r / SS, b / SS))
+            adv = font.getlength(ch) / SS
+            if self.cjk and is_hanzi(ch) and mask is not None:
+                # by hand a character takes the room its strokes need, not a fixed square: the
+                # advance comes from the ink, with a little air either side (fonts differ a lot
+                # in how much empty box they leave around a character)
+                ink_w, bearing = (r - l) / SS, 0.07 * self.xh * scale
+                box = max(ink_w, 0.62 * CJK_HEIGHT * self.xh * scale)
+                shift = l / SS - (box - ink_w) / 2 - bearing
+                l, r = l - shift * SS, r - shift * SS
+                self.cache[key] = (mask, 2 - l, 2 - t, box + 2 * bearing, (l / SS, t / SS, r / SS, b / SS))
+                return self.cache[key]
+            if self.cjk and (ch in CJK_PUNCT_CLOSE or ch in CJK_PUNCT_OPEN) and mask is not None:
+                # full-width punctuation sits in a whole character box; by hand it takes about half
+                ink_w = (r - l) / SS
+                adv = min(adv, ink_w + 0.45 * self.em * scale)
+                if ch in CJK_PUNCT_OPEN:  # pull the mark to the left edge of its narrower box
+                    shift = l / SS - 0.1 * self.em * scale
+                    l, r = l - shift * SS, r - shift * SS
+                    mask_ox = 2 - l
+                    self.cache[key] = (mask, mask_ox, 2 - t, adv, (l / SS, t / SS, r / SS, b / SS))
+                    return self.cache[key]
+            self.cache[key] = (mask, 2 - l, 2 - t, adv, (l / SS, t / SS, r / SS, b / SS))
         return self.cache[key]
 
     def advance(self, ch, scale=1.0):
@@ -202,10 +309,25 @@ class Writer:
     """
 
     def __init__(self, font_path, xheight, rng, mess=1.0, fallbacks=(), habit_seed=None,
-                 slant=0.0, pressure=0, letter_gap=1.0, word_gap=1.0):
+                 slant=0.0, pressure=0, letter_gap=1.0, word_gap=1.0, cjk_fonts=(), cursive_font=None):
         self.faces = [Face(p, xheight) for p in (font_path, *fallbacks)]
+        self.cjk_faces = []
+        for p in cjk_fonts:
+            try:
+                self.cjk_faces.append(Face(p, xheight, cjk=True))
+            except OSError:
+                pass
+        self.cursive = None
+        if cursive_font:
+            try:
+                self.cursive = Face(cursive_font, xheight, cjk=True)
+            except OSError:
+                pass
+        self._habit_key = 0 if habit_seed is None else int(habit_seed) % (2 ** 31)
+        self._face_of = {}
         self.space = self.faces[0].advance(" ")
-        self.xh, self.rng, self.mess = xheight, rng, mess
+        self.xh, self.rng = xheight, rng
+        self.set_mess(mess)
         self.slant = 0.0
         # Standing choices of this writer: overall lean (shear, + leans right), how hard they
         # press (-1 light, 0 normal, 1 heavy) and how tightly they pack letters and words.
@@ -216,6 +338,16 @@ class Writer:
         self._habit_rng = random.Random(rng.random() if habit_seed is None else habit_seed)
         self.habits = {}
 
+    def set_mess(self, mess):
+        """mess is how loosely this writer writes: about 1 is careful, 2 relaxed, 6 a scrawl.
+
+        Things that drift slowly (slant, the baseline, word size) grow in step with it; the
+        letter-by-letter wobble grows more slowly, so a messy page still reads as one hand
+        rather than as letters cut out of different notes."""
+        m = self.mess = mess
+        self.wobble = m if m <= 2 else 2 * (m / 2) ** 0.7
+        self.extra = max(0.0, m - 2)  # how far past the old loosest setting
+
     def habit(self, ch):
         if ch not in self.habits:
             h = self._habit_rng
@@ -223,14 +355,32 @@ class Writer:
         return self.habits[ch]
 
     def face_for(self, ch):
-        return next((f for f in self.faces if ord(ch) in f.cmap), self.faces[0])
+        """Chinese characters and full-width marks come from the Chinese hand, everything else from
+        the Latin one; each falls back to the other fonts that have the character."""
+        if ch not in self._face_of:
+            code = ord(ch)
+            order = (self.cjk_faces + self.faces) if is_cjk(ch) else (self.faces + self.cjk_faces)
+            self._face_of[ch] = next((f for f in order if code in f.cmap), self.faces[0])
+        face = self._face_of[ch]
+        if self.cursive is not None and face.cjk and self.extra > 1.0 and is_hanzi(ch):
+            # how likely this writer is to run this character together: common characters first
+            share = min(0.75, 0.13 * (self.mess - 3.0)) * (1.5 if ch in CJK_COMMON else 0.8)
+            pick = (zlib.crc32(ch.encode("utf-8")) * 2654435761 + self._habit_key * 40503) % 1000 / 1000
+            if pick < share and ord(ch) in self.cursive.cmap:
+                return self.cursive
+        return face
+
+    def cjk_width(self):
+        """The width of one Chinese character as this writer sets it."""
+        face = self.face_for("国")
+        return face.advance("国") if face.cjk else 1.8 * self.xh
 
     def glyphs(self, word):
         """Yields items: ("g", char, face, shift, accent, gap) for a letter, where shift is 1 for
         superscript and -1 for subscript, accent is HAT, BAR or None and gap is extra space before
         a superscript or subscript run; ("frac", num, den) and ("sum", lower, upper) for
         stacked objects."""
-        word = word.lstrip(SLIP)
+        word = word.lstrip(SLIP + INS).rstrip(GLUE)
         i, prev_shift = 0, 0
         while i < len(word):
             if word[i] in (FRAC, SUM) and END in word[i:]:
@@ -253,8 +403,8 @@ class Writer:
             i += 1
 
     def missing(self, text):
-        return {c for c in text if c not in MARKS + (SLIP, FRAC, SUM, SEP, END) and not c.isspace()
-                and all(ord(c) not in f.cmap for f in self.faces)}
+        return {c for c in text if c not in CONTROL and not c.isspace()
+                and all(ord(c) not in f.cmap for f in self.faces + self.cjk_faces)}
 
     def item_width(self, item):
         xh = self.xh
@@ -267,29 +417,50 @@ class Writer:
         return max(sigma, 0.6 * self.width(item[1]), 0.6 * self.width(item[2])) + 0.3 * xh
 
     def width(self, word):
+        if word.startswith(INS):  # written above the line, takes no room on it
+            return 0
         return sum(self.item_width(it) for it in self.glyphs(word))
+
+    def gap(self, word, nxt=None):
+        """The usual space after a word: a word space, or for glued Chinese text a small gap
+        (a bit more where Chinese meets Latin letters or digits)."""
+        if not word.endswith(GLUE):
+            return self.space * 1.1
+        last = word.rstrip(GLUE)[-1:]
+        first = nxt.lstrip(SLIP + INS)[:1] if nxt else ""
+        if (last and not is_cjk(last)) or (first and not is_cjk(first)):
+            return 0.35 * self.space
+        return 0.06 * self.xh
+
+    def _limit(self, width):
+        e = self.extra
+        return width + self.rng.uniform(-0.8 - 0.15 * e, min(4.0, 2.5 + 0.3 * e)) * self.xh
 
     def wrap(self, words, first_width, width):
         """Breaks words into lines. A line may run a little past the margin: the writer then
         squeezes the last words in rather than starting a new line."""
-        lines, cur, used = [], [], 0
-        limit = first_width + self.rng.uniform(-0.8, 2.5) * self.xh
+        lines, cur, used, prev = [], [], 0, None
+        limit = self._limit(first_width)
         for word in words:
+            if word.startswith(INS):  # rides along above the line wherever it falls
+                cur.append(word)
+                continue
             w = self.width(word)
-            grown = w if not cur else used + self.space * 1.1 + w
-            if cur and grown > limit:
+            grown = w if prev is None else used + self.gap(prev, word) + w
+            if prev is not None and grown > limit:
                 lines.append(cur)
                 cur, used = [word], w
-                limit = width + self.rng.uniform(-0.8, 2.5) * self.xh
+                limit = self._limit(width)
             else:
                 cur.append(word)
                 used = grown
+            prev = word
         if cur:
             lines.append(cur)
         return lines
 
     def _stamp(self, ink, face, ch, scale, x, baseline, shear, pressure, guard=None,
-               squeeze=1.0, weight=0, lazy=0.0):
+               squeeze=1.0, weight=0, lazy=0.0, grow=1.0):
         """Draws one letter with its own proportions, slant, rotation and slightly bent strokes.
 
         guard is (previous letter's mask, its x, its y, ink overlap allowed): the letter is moved
@@ -301,31 +472,48 @@ class Writer:
         mask, ox, oy, adv, (l, t, r, b) = face.glyph(ch, scale)
         if mask is None:
             return adv, baseline, None, 0
-        rng, m = self.rng, self.mess
+        rng, m = self.rng, self.wobble
+        baseline += face.shift * scale
         em = face.em * scale
         h_shear, h_size, _, h_rot = self.habit(ch)
         shear += h_shear + lazy * 0.5
-        size = (1 + h_size) * (1 - lazy) * (1 + rng.gauss(0, 0.015) * m)
+        # a Chinese character is a dense knot of strokes: bend it less, or it turns to a blot
+        bend = (0.55 + 0.05 * min(self.extra, 5)) if face.cjk else 1.0
+        # letter sizes stay fairly even even in a messy hand; the mess goes into shape and slant
+        ms = min(m, 3.0)
+        if not face.cjk and self.extra > 0:
+            # a fast Latin hand lets single letters bounce off the line and swell or shrink
+            e = min(self.extra, 5)
+            ms += 0.35 * e
+            baseline += rng.gauss(0, 0.025 * e) * self.xh * scale
+        size = grow * (1 + h_size) * (1 - lazy) * (1 + rng.gauss(0, 0.015) * ms)
         if ch.isupper():
             size *= 1.03  # capitals tend to come out a touch bigger
         elif ch.isdigit():
             size *= 0.95  # digits a touch smaller and tighter
-        sx = size * squeeze * (1 + rng.gauss(0, 0.03) * m)
-        sy = size * (1 + rng.gauss(0, 0.02) * m)
-        rot = math.radians(h_rot + rng.gauss(0, 1.0) * (1 + 2 * lazy) * m)
+        # a hurried hand writes narrower letters
+        sx = size * squeeze * (1 + rng.gauss(0, 0.03) * ms) * (1 - 0.012 * min(self.extra, 5))
+        sy = size * (1 + rng.gauss(0, 0.02) * ms)
+        rot_m = min(m, 3.0) + 0.3 * max(0.0, m - 3.0)
+        rot = h_rot + rng.gauss(0, 1.0) * (1 + 2 * lazy) * rot_m * (0.8 if face.cjk else 1.0 + 0.12 * min(self.extra, 5))
+        if face.cjk:  # a hurried Chinese hand lets its horizontal strokes climb to the right
+            rot -= 0.45 * min(self.extra, 5) * (1 + rng.gauss(0, 0.3))
+        rot = math.radians(rot)
         cos_r, sin_r = math.cos(rot), math.sin(rot)
         # Smooth waves across the letter: the first two bend strokes sideways, the last two up/down.
         # Each wave stretches or squeezes any part of the letter by at most 10%, so strokes bend
         # but never fold into blobs.
         waves = []
+        cap = (0.1 + 0.025 * self.extra) * bend
         for _ in range(4):
             cycles, angle = rng.uniform(0.5, 1.2), rng.uniform(0, 2 * math.pi)
             k = 2 * math.pi * cycles / em
-            strain = max(-0.1, min(0.1, rng.gauss(0, 0.04) * (1 + 2 * lazy) * m))
+            strain = max(-cap, min(cap, rng.gauss(0, 0.04) * (1 + 2 * lazy) * m * bend))
             waves.append((strain / k, k * math.cos(angle), k * math.sin(angle), rng.uniform(0, 2 * math.pi)))
-        cx, cy = adv * sx / 2, -0.5 * self.xh * scale * sy
+        mid_y = (t + b) / 2 if face.cjk else -0.5 * self.xh * scale
+        cx, cy = adv * sx / 2, mid_y * sy
         # the bend is zero at the letter's middle, so it changes the shape without moving the letter
-        at_middle = [a * math.sin(kx * adv / 2 - ky * 0.5 * self.xh * scale + ph) for a, kx, ky, ph in waves]
+        at_middle = [a * math.sin(kx * adv / 2 + ky * mid_y + ph) for a, kx, ky, ph in waves]
 
         def forward(gx, gy):
             # scale about the origin, then slant and rotate about the middle of the letter
@@ -376,16 +564,34 @@ class Writer:
     def write_line(self, ink, words, x, baseline, right=None):
         """Writes one row. If the words do not fit before `right`, the writer squeezes them in
         the way people do, writing the later part of the line narrower rather than wrapping."""
-        rng, m, xh = self.rng, self.mess, self.xh
-        start, slope, drift = x, rng.gauss(0, 0.0018) * m, 0.0
+        rng, m, w, e, xh = self.rng, self.mess, self.wobble, self.extra, self.xh
+        # How far a row wanders off its ruled line is held in check even for the messiest hand:
+        # people scrawl, but they still write along the lines.
+        lm = min(m, 3.0) + 0.15 * max(0.0, m - 3.0)
+        start, slope, drift = x, rng.gauss(0, 0.0018) * lm, 0.0
         wave_k, wave_ph = rng.uniform(0.3, 0.8) * 2 * math.pi / (40 * xh), rng.uniform(0, 2 * math.pi)
-        natural = sum(self.width(w) for w in words) + self.space * 1.1 * (len(words) - 1)
+        wave_amp = 0.06 * xh * lm
+        drift_cap = 0.15 * xh * max(1.0, min(1.8, (m / 2) ** 0.7))
+        slant_cap = 0.12 * max(1.0, min(1.6, (m / 2) ** 0.5))
+        size_m = max(0.0, min(m, 5.0) - 1)
+        line_size = 1 + max(-0.06, min(0.06, rng.gauss(0, 0.01) * size_m))
+        real = [wd for wd in words if not wd.startswith(INS)]
+        natural = sum(self.width(wd) for wd in real) + sum(self.gap(a, b) for a, b in zip(real, real[1:]))
         room = (right - x + 0.6 * xh) if right is not None else natural
         squeeze = max(0.84, min(1.0, room / natural)) if natural > room else 1.0
-        for word in words:
-            drift = max(-0.15 * xh, min(0.15 * xh, drift + rng.gauss(0, 0.04 * xh) * m))
-            self.slant = max(-0.12, min(0.12, self.slant * 0.9 + rng.gauss(0, 0.02) * m))
-            word_pressure = rng.uniform(0.9, 1.0) * (0.86 if self.pressure < 0 else 1.0)
+        word_squeeze, prev_word = 1.0, None
+        for n_word, word in enumerate(words):
+            if word.startswith(INS):
+                if prev_word is not None:
+                    self._insert(ink, word, x - 0.5 * self.gap(prev_word), baseline + drift + slope * (x - start))
+                continue
+            cjk_word = is_cjk(word.lstrip(SLIP)[:1] or "a")
+            # Chinese moves on by the character, so its wander is spread over more, smaller steps
+            drift = max(-drift_cap, min(drift_cap, drift + rng.gauss(0, 0.04 * xh) * lm * (0.5 if cjk_word else 1)))
+            self.slant = max(-slant_cap, min(slant_cap, self.slant * 0.9 + rng.gauss(0, 0.02) * w))
+            word_pressure = rng.uniform(0.9 - 0.02 * e, 1.0) * (0.86 if self.pressure < 0 else 1.0)
+            # some words come out a little bigger or smaller than the rest
+            grow = line_size * max(0.88, min(1.14, 1 + rng.gauss(0, 0.012 if cjk_word else 0.016) * size_m))
             # pen pressure changes from word to word, around this writer's usual pressure
             weight = rng.choice({-1: (0, 0, -1, -1, -1), 0: (0, 0, 0, 0, 1, -1), 1: (0, 0, 1, 1, 1)}[self.pressure])
             # the squeeze only sets in over the second half of the line
@@ -393,6 +599,9 @@ class Writer:
             word_squeeze = 1.0 if here < 0.45 else 1 - (1 - squeeze) * min(1, (here - 0.45) / 0.3)
             items = list(self.glyphs(word))
             letters = sum(1 for it in items if it[0] == "g" and it[1].isalpha())
+            fade = min(0.2, 0.04 * max(0.0, m - 1.5))  # the pen lifts a little towards a word's end
+            join_p = min(0.85, 0.55 + 0.05 * e)
+            spread = 0.07 * max(1.0, w / 2)
             pos, prev, bob, joined = x, None, 0.0, False  # prev: (char, face, scale, mask, x, y)
             for k, item in enumerate(items):
                 if item[0] != "g":
@@ -405,23 +614,26 @@ class Writer:
                 pos += gap
                 raise_by = {1: 0.7 * xh, -1: -0.35 * xh, 0: 0}[shift]
                 # a long word gets lazier towards its end: smaller, more slanted, looser letters
-                lazy = min(0.18, 0.03 * (k - 3)) * m if letters >= 6 and k >= 4 else 0.0
+                lazy = min(0.25, min(0.18, 0.03 * (k - 3)) * m) if letters >= 6 and k >= 4 else 0.0
                 # letters bob up and down smoothly, so neighbours sit at similar heights
-                bob = 0.6 * bob + rng.gauss(0, 0.025 * xh) * m
-                cx = pos + rng.gauss(0, 0.02 * xh) * m
+                bob = 0.6 * bob + rng.gauss(0, 0.025 * xh) * w
+                cx = pos + rng.gauss(0, 0.02 * xh) * w
                 cy = (baseline + drift + slope * (cx - start) - raise_by + bob
                       + self.habit(ch)[2] * xh * scale
-                      + 0.06 * xh * m * math.sin(wave_k * (cx - start) + wave_ph))
+                      + wave_amp * math.sin(wave_k * (cx - start) + wave_ph))
                 guard = None
                 if prev:
                     allowed = 1.1 * designed_overlap(prev[1], prev[0], prev[2], face, ch, scale, gap) + 100
                     if joined:
                         allowed += 14 * 255  # the two letters are meant to touch
+                    allowed *= 1 + 0.25 * e  # a hurried hand lets letters crowd into each other
                     guard = (*prev[3:], allowed)
+                pressure = word_pressure * rng.uniform(0.93, 1.0) * (1 - fade * k / max(1, len(items) - 1))
+                # a hurried hand also leans further forward
+                lean = self.slant_bias + 0.015 * min(e, 5) + self.slant
                 advance, top, drawn, moved = self._stamp(ink, face, ch, scale, cx, cy,
-                                                         self.slant_bias + self.slant + rng.gauss(0, 0.03) * m,
-                                                         word_pressure * rng.uniform(0.93, 1.0), guard,
-                                                         word_squeeze, weight, lazy)
+                                                         lean + rng.gauss(0, 0.02) * min(w, 2.0),
+                                                         pressure, guard, word_squeeze, weight, lazy, grow)
                 if accent:
                     self._accent(ink, accent, cx + moved, cx + moved + advance, top)
                 prev = (ch, face, scale, *drawn) if drawn else None
@@ -429,18 +641,43 @@ class Writer:
                 nxt = items[k + 1] if k + 1 < len(items) else None
                 joined = (nxt is not None and nxt[0] == "g" and not shift and not nxt[3]
                           and ch in JOIN_FROM and nxt[1].isalpha() and nxt[1].islower()
-                          and rng.random() < 0.55)
-                pos += moved + advance * self.letter_gap * (rng.uniform(0.8, 0.9) if joined
-                                                            else rng.uniform(0.94, 1.08))
+                          and rng.random() < join_p)
+                pos += moved + advance * self.letter_gap * (rng.uniform(0.8 - 0.02 * e, 0.9) if joined
+                                                            else rng.uniform(1.01 - spread, 1.01 + spread))
             if word.startswith(SLIP):
-                self._scribble(ink, x, pos, baseline + drift)
-            after = 1.0 + (0.35 if word[-1:] in ",.;:" else 0.0)  # a breath after punctuation
-            x = pos + self.space * self.word_gap * word_squeeze * rng.uniform(0.75, 1.25) * after
-        return x - self.space
+                self._scribble(ink, x, pos, baseline + drift, word)
+            nxt_word = next((wd for wd in words[n_word + 1:] if not wd.startswith(INS)), None)
+            if word.endswith(GLUE):
+                # Chinese characters follow each other with only a small, uneven gap; a hurried
+                # hand sometimes runs one character into the next
+                g = self.gap(word, nxt_word)
+                x = pos + max(-0.12 * xh * min(e, 4) / 4, g * word_squeeze + rng.gauss(0, 0.05 * xh) * (1 + 0.35 * e))
+            else:
+                after = 1.0 + (0.35 if word[-1:] in ",.;:" else 0.0)  # a breath after punctuation
+                wg = 0.25 * max(1.0, (m / 2) ** 0.5)
+                x = pos + self.space * self.word_gap * word_squeeze * rng.uniform(1 - wg, 1 + wg) * after
+            prev_word = word
+        return x - (self.space if prev_word is not None and not prev_word.endswith(GLUE) else 0)
+
+    def _insert(self, ink, word, x, baseline):
+        """A word the writer left out and added afterwards: a caret under the gap and the word
+        written small above it."""
+        rng, xh = self.rng, self.xh
+        text = word.lstrip(INS).rstrip(GLUE)
+        cjk = any(is_hanzi(c) for c in text)
+        scale = 0.55 if cjk else 0.7
+        y = baseline + (0.05 if cjk else 0.2) * xh
+        ink.stroke([(x - 0.28 * xh + rng.gauss(0, 0.04 * xh), y + rng.gauss(0, 0.05 * xh)),
+                    (x + rng.gauss(0, 0.04 * xh), y - 0.55 * xh),
+                    (x + 0.28 * xh + rng.gauss(0, 0.04 * xh), y + rng.gauss(0, 0.05 * xh))],
+                   2.4, round(255 * rng.uniform(0.85, 1.0)))
+        w = scale * self.width(text)
+        up = baseline - (1.7 if cjk else 1.3) * xh + rng.gauss(0, 0.05 * xh)
+        self._run(ink, text, x - w / 2 + rng.gauss(0, 0.1 * xh), up, scale)
 
     def _run(self, ink, text, x, baseline, scale):
         """Writes a short plain run (a numerator, a limit) at the given size; returns its width."""
-        rng, m = self.rng, self.mess
+        rng, m = self.rng, self.wobble
         pos, prev = x, None
         for item in self.glyphs(text):
             if item[0] != "g":
@@ -488,16 +725,54 @@ class Writer:
         self._run(ink, lower, cx - wl / 2, baseline + 1.15 * xh, 0.6)
         return w
 
-    def _scribble(self, ink, x0, x1, baseline):
-        """Crosses out a false start with two quick back-and-forth strokes."""
+    def _scribble(self, ink, x0, x1, baseline, word=""):
+        """Crosses out a slip. Latin words get one or two quick strokes through the middle, now and
+        then a scribbled blot; a wrong Chinese character is mostly blotted out or struck with two
+        or three short lines, the way it is done in an exercise book."""
         rng, xh = self.rng, self.xh
+        cjk = any(is_hanzi(c) for c in word)
+        top, bottom = ((baseline - CJK_HEIGHT * xh, baseline) if cjk
+                       else (baseline - 0.95 * xh, baseline - 0.05 * xh))
+        roll = rng.random()
+        if cjk:
+            style = "blot" if roll < 0.45 else "lines" if roll < 0.85 else "single"
+        else:
+            blot = 0.12 + 0.04 * self.extra
+            style = "blot" if roll < blot else "double" if roll < blot + 0.5 else "single"
+        value = lambda: round(255 * rng.uniform(0.85, 1.0))
+        if style == "blot":
+            # tight back-and-forth loops until the word is a dark knot
+            pts, x, up = [], x0 - 0.1 * xh, True
+            step = 0.13 * xh
+            for sweep in range(2):
+                while (x < x1 + 0.1 * xh) if sweep == 0 else (x > x0 - 0.1 * xh):
+                    y = (top + 0.1 * (bottom - top)) if up else (bottom - 0.1 * (bottom - top))
+                    pts.append((x + rng.gauss(0, 0.05 * xh), y + rng.gauss(0, 0.08 * xh)))
+                    x += step * rng.uniform(0.7, 1.3) * (1 if sweep == 0 else -1)
+                    up = not up
+            ink.stroke(pts, 2.4, value())
+            return
+        if style == "lines":
+            n = rng.choice((2, 2, 3))
+            for k in range(n):
+                y = top + (bottom - top) * (k + 1) / (n + 1) + rng.gauss(0, 0.06 * xh)
+                tilt = rng.gauss(0, 0.05 * xh)
+                ink.stroke([(x0 - 0.15 * xh, y - tilt), ((x0 + x1) / 2, y + rng.gauss(0, 0.04 * xh)),
+                            (x1 + 0.15 * xh, y + tilt)], 2.5, value())
+            return
+        if style == "single":
+            y = (top + bottom) / 2 + rng.gauss(0, 0.08 * xh)
+            tilt = rng.gauss(0, 0.12 * xh)
+            ink.stroke([(x0 - 0.25 * xh, y + tilt), ((x0 + x1) / 2, y + rng.gauss(0, 0.05 * xh)),
+                        (x1 + 0.2 * xh, y - tilt)], 2.5, value())
+            return
         for k in range(2):
             y = baseline - xh * (0.55 + 0.25 * k) + rng.gauss(0, 0.08 * xh)
             pts = [(x0 - 0.2 * xh, y)]
             for i in range(1, 5):
                 pts.append((x0 + (x1 - x0) * i / 4 + rng.gauss(0, 0.1 * xh),
                             y + rng.gauss(0, 0.12 * xh)))
-            ink.stroke(pts, 2.5, round(255 * rng.uniform(0.85, 1.0)))
+            ink.stroke(pts, 2.5, value())
 
     def _accent(self, ink, accent, x0, x1, glyph_top):
         """Draws a hat or bar stroke just above a letter whose ink starts at glyph_top."""
@@ -525,6 +800,24 @@ def fallbacks_for(font):
     local = [folder / name for name in FALLBACK_FONTS
              if (folder / name).exists() and (folder / name).resolve() != Path(font).resolve()]
     return local + [Path(p) for p in SYSTEM_FALLBACKS if Path(p).exists()]
+
+
+def cursive_for(font, zh_font=None):
+    """The running-script companion of the chosen Chinese hand, if it has one."""
+    name = Path(zh_font).name if zh_font else CJK_FONTS[0]
+    companion = Path(zh_font).parent / CJK_CURSIVE[name] if zh_font and name in CJK_CURSIVE else (
+        Path(font).parent / CJK_CURSIVE[name] if name in CJK_CURSIVE else None)
+    return companion if companion is not None and companion.exists() else None
+
+
+def cjk_fonts_for(font, zh_font=None):
+    """The Chinese hand to write with (zh_font, or the first bundled one), then the other bundled
+    Chinese fonts and a system font for characters it lacks."""
+    folder = Path(font).parent
+    chosen = [Path(zh_font)] if zh_font and Path(zh_font).exists() else []
+    bundled = [folder / name for name in CJK_FONTS if (folder / name).exists()]
+    rest = [p for p in bundled if not chosen or p.resolve() != chosen[0].resolve()]
+    return chosen + rest + [Path(p) for p in CJK_SYSTEM_FALLBACKS if Path(p).exists()]
 
 
 def paper_spec(kind):
@@ -664,18 +957,98 @@ def ink_color(name):
     return INKS.get(name, INKS["blue"])
 
 
-def add_slips(words, rng, rate):
-    """Puts a scribbled-out false start before a few words: the writer began the word, slipped,
-    crossed it out and wrote it again."""
+def tokenize(text):
+    """Splits a paragraph into the units the writer places one after another. Latin text splits at
+    spaces. Chinese has no spaces, so every character is its own unit, glued (GLUE) to the next;
+    closing marks such as ，。」 stay with the character before them and opening marks such as
+    「（ with the one after, so no line starts with a comma or ends with an opening quote."""
     out = []
-    for word in words:
-        plain = word.replace(SUP, "").replace(SUB, "")
-        if len(plain) >= 5 and plain.isalpha() and rng.random() < rate:
-            n = rng.randint(2, min(4, len(plain) - 2))
-            slip = plain[:n]
-            if rng.random() < 0.5:  # a wrong letter after the right ones
-                slip += rng.choice("aeirstnlo")
-            out.append(SLIP + slip)
+    for word in text.split():
+        if not any(is_cjk(c) for c in word):
+            out.append(word)
+            continue
+        units, i = [], 0  # (kind, text): h hanzi, c closing mark, o opening mark, l anything else
+        while i < len(word):
+            c = word[i]
+            if c in (FRAC, SUM) and END in word[i:]:
+                end = word.index(END, i)
+                seg, kind, i = word[i:end + 1], "l", end + 1
+            elif c in MARKS and i + 1 < len(word):
+                seg, i = word[i:i + 2], i + 2
+                kind = "h" if is_hanzi(seg[-1]) else "l"
+            else:
+                seg, i = c, i + 1
+                kind = ("h" if is_hanzi(c) else "c" if c in CJK_PUNCT_CLOSE
+                        else "o" if c in CJK_PUNCT_OPEN else "l")
+            if kind == "l" and units and units[-1][0] == "l":
+                units[-1] = ("l", units[-1][1] + seg)
+            else:
+                units.append((kind, seg))
+        pieces, opening = [], ""
+        for kind, seg in units:
+            if kind == "o":
+                opening += seg
+            elif (kind == "c" or (kind == "l" and all(ch in ",.;:!?)]" for ch in seg))) and pieces and not opening:
+                pieces[-1] += seg
+            else:
+                pieces.append(opening + seg)
+                opening = ""
+        if opening:
+            pieces.append(opening)
+        out.extend(p + GLUE for p in pieces[:-1])
+        out.append(pieces[-1])
+    return out
+
+
+def _misspell(word, rng):
+    """A plausible slip of the pen: two letters swapped, one dropped or one doubled."""
+    i = rng.randint(1, len(word) - 2)
+    roll = rng.random()
+    if roll < 0.4:
+        return word[:i] + word[i + 1] + word[i] + word[i + 2:]
+    if roll < 0.7:
+        return word[:i] + word[i + 1:]
+    return word[:i] + word[i] + word[i:]
+
+
+def add_slips(words, rng, rate, mess=1.0):
+    """Puts the mistakes of a real writer into a paragraph. Before a few words the writer began
+    the word, slipped, crossed it out and wrote it again; a looser writer also crosses out whole
+    misspelt words and forgets the odd word, adding it above the line with a caret. In Chinese a
+    wrong character (often one that looks or sounds alike) is blotted out and rewritten."""
+    out = []
+    caret = 0.0 if mess < 3.2 else rate * 0.25 * min(2.0, (mess - 2.8) / 1.5)
+    for n, word in enumerate(words):
+        glue = GLUE if word.endswith(GLUE) else ""
+        bare = word.rstrip(GLUE)
+        plain = bare.replace(SUP, "").replace(SUB, "")
+        if len(plain) == 1 and is_hanzi(plain):
+            # a Chinese line holds about three times as many characters as an English one words
+            if rng.random() < rate / 2:
+                group = next((g for g in CJK_CONFUSE if plain in g), "")
+                roll = rng.random()
+                if group and roll < 0.5:
+                    wrong = rng.choice([c for c in group if c != plain])
+                elif roll < 0.75:
+                    wrong = plain  # written badly, blotted out, written again
+                else:
+                    wrong = rng.choice(CJK_COMMON)
+                out.append(SLIP + wrong + GLUE)
+            elif n > 0 and rng.random() < caret / 3:
+                out.append(INS + word)
+                continue
+        elif len(plain) >= 5 and plain.isalpha() and rng.random() < rate:
+            if mess >= 2.8 and rng.random() < 0.35:
+                out.append(SLIP + _misspell(plain, rng))  # the whole word, misspelt
+            else:
+                k = rng.randint(2, min(4, len(plain) - 2))
+                slip = plain[:k]
+                if rng.random() < 0.5:  # a wrong letter after the right ones
+                    slip += rng.choice("aeirstnlo")
+                out.append(SLIP + slip)
+        elif n > 0 and len(plain) >= 3 and plain.isalpha() and rng.random() < caret:
+            out.append(INS + word)
+            continue
         out.append(word)
     return out
 
@@ -687,11 +1060,30 @@ def flow(blocks, writer, left, right, slip_rate=0.0):
             yield kind, [], 0
             continue
         width = right - left - indent
-        words = text.split()
+        words = tokenize(text)
+        if first and words and is_cjk(words[0].lstrip(SLIP + INS)[:1] or "a"):
+            first = 2 * writer.cjk_width()  # a Chinese paragraph is indented by two characters
         if kind == "p" and slip_rate:
-            words = add_slips(words, writer.rng, slip_rate)
+            words = add_slips(words, writer.rng, slip_rate, writer.mess)
         for i, words in enumerate(writer.wrap(words, width - first, width)):
             yield kind, words, indent + (first if i == 0 else 0)
+
+
+def join_cjk_lines(text):
+    """Text taken out of a PDF breaks Chinese paragraphs at the end of every printed line. Joins a
+    line onto the next when it is long, ends mid-sentence in Chinese and the next goes on in
+    Chinese, so the hand-written page can break its lines where it needs to."""
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if out and s and is_cjk(s[0]):
+            prev = out[-1].rstrip()
+            if (len(prev) >= 15 and prev and (is_hanzi(prev[-1]) or prev[-1] in "，、；：“‘（《「")
+                    and sum(is_cjk(c) for c in prev) > len(prev) / 2):
+                out[-1] = prev + s
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def draw_row(ink, writer, kind, words, x, rule_y, lift, right=None):
@@ -702,22 +1094,29 @@ def draw_row(ink, writer, kind, words, x, rule_y, lift, right=None):
 
 
 DEFAULTS = dict(paper="lined", texture="cream", ink="blue", seed=7, habit_seed=None, mess=1.0,
-                size=1.0, slant=0.0, pressure=0, letter_gap=1.0, word_gap=1.0, slips=1.5, scan=0.0)
+                level=None, zh_font=None, size=1.0, slant=0.0, pressure=0, letter_gap=1.0,
+                word_gap=1.0, slips=1.5, scan=0.0)
 
 
 def render_pages(blocks, font, progress=None, **opts):
     """Renders blocks to a list of page images. Options (see DEFAULTS): paper, texture, ink
     (name or #rrggbb), seed (layout), habit_seed (the writer's letter habits; None = from seed),
     mess, size, slant (shear, + leans right), pressure (-1/0/1), letter_gap, word_gap
-    (multipliers), slips (% of words with a crossed-out false start), scan (0 off, 1 light, 2 strong).
+    (multipliers), slips (% of words with a crossed-out false start), scan (0 off, 1 light, 2 strong),
+    level (messiness 1-10; overrides mess), zh_font (the .ttf for Chinese text; None = first bundled).
     progress(page_number) is called as each page is finished."""
     o = {**DEFAULTS, **opts}
+    if o["level"] is not None:
+        level = max(1, min(10, round(float(o["level"]))))
+        o["mess"] = LEVEL_MESS[level]
+        o["slips"] = o["slips"] * (0.5 + 0.25 * level)  # a messier writer also makes more slips
     rng = random.Random(o["seed"])
     scan_rng = random.Random(o["seed"] + 1) if o["scan"] else None
     color, bg = ink_color(o["ink"]), TEXTURES.get(o["texture"], TEXTURES["cream"])[0]
     xh, left, right = paper_spec(o["paper"])
     writer = Writer(font, xh * o["size"], rng, o["mess"], fallbacks_for(font), o["habit_seed"],
-                    o["slant"], o["pressure"], o["letter_gap"], o["word_gap"])
+                    o["slant"], o["pressure"], o["letter_gap"], o["word_gap"],
+                    cjk_fonts_for(font, o["zh_font"]), cursive_for(font, o["zh_font"]))
     missing = writer.missing("".join(text for _, text, _, _ in blocks))
     if missing:
         print("warning: no font has these characters:", "".join(sorted(missing)))
@@ -739,9 +1138,9 @@ def render_pages(blocks, font, progress=None, **opts):
             if kind == "blank":
                 continue
         if words:
-            writer.mess = o["mess"] * (1 + 0.3 * i / len(lines))  # writing loosens up as the work goes on
-            x = left + offset + rng.gauss(0, 0.12 * xh) * writer.mess
-            draw_row(layer, writer, kind, words, x, rows[r], lift + rng.gauss(0, 0.03 * xh) * writer.mess,
+            writer.set_mess(o["mess"] * (1 + 0.3 * i / len(lines)))  # writing loosens up as the work goes on
+            x = left + offset + rng.gauss(0, 0.12 * xh) * min(writer.mess, 5.0)
+            draw_row(layer, writer, kind, words, x, rows[r], lift + rng.gauss(0, 0.03 * xh) * min(writer.mess, 4.0),
                      right)
         r += 1
     if img is not None:
@@ -847,7 +1246,7 @@ def parse_markup(source):
         elif text.startswith("# "):
             blocks.append(("h", text[2:].strip(), 0, 0))
         else:
-            first = 8 * MM if text.startswith(" ") else 0
+            first = 8 * MM if text.startswith((" ", "　")) else 0
             blocks.append(("p", text.strip(), 0, first))
     return blocks
 
@@ -1008,6 +1407,8 @@ def main():
     ap.add_argument("--paper", default="lined", choices=PAPERS)
     ap.add_argument("--ink", default="blue", choices=sorted(INKS))
     ap.add_argument("--mess", type=float, default=1.0, help="0 = tidy, 1 = default, 2 = messy")
+    ap.add_argument("--level", type=int, choices=range(1, 11), help="messiness level 1-10 (overrides --mess)")
+    ap.add_argument("--zh-font", help="Chinese .ttf (default: the first bundled Chinese hand)")
     ap.add_argument("--size", type=float, default=1.0, help="letter size multiplier, e.g. 0.9 or 1.1")
     ap.add_argument("--slips", type=float, default=1.5,
                     help="percent of words preceded by a crossed-out false start (0 = none)")
@@ -1023,8 +1424,9 @@ def main():
     if not args.input:
         ap.error("an input file is required unless --compare is used")
     blocks = read_docx(args.input) if args.input.lower().endswith(".docx") else read_text(args.input)
-    pages = render(blocks, args.font, args.paper, args.ink, args.seed, args.mess, args.size, args.slips,
-                   args.scan)
+    pages = render_pages(blocks, args.font, paper=args.paper, ink=args.ink, seed=args.seed, mess=args.mess,
+                         level=args.level, zh_font=args.zh_font, size=args.size, slips=args.slips,
+                         scan=1.0 if args.scan else 0.0)
     out = Path(args.out)
     save_pdf(pages, out)
     for n, page in enumerate(pages, 1):
