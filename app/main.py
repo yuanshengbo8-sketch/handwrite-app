@@ -34,6 +34,26 @@ else:
 UI_DIR, FONT_DIR = BASE / "ui", BASE / "fonts"
 WORK_DIR = Path(tempfile.gettempdir()) / f"handwrite-{os.getpid()}"
 
+
+def config_path():
+    """Where the last-used options and handwriting ID are kept between launches."""
+    if sys.platform == "win32":
+        root = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return root / "Handwrite" / "settings.json"
+
+
+def load_config():
+    try:
+        data = json.loads(config_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 FONTS = [
     ("ReenieBeanie.ttf", "Reenie Beanie", "随手快写"),
     ("Kalam.ttf", "Kalam", "工整略斜"),
@@ -61,6 +81,11 @@ def new_code():
     return "".join(secrets.choice(alphabet) for _ in range(4)) + "-" + "".join(secrets.choice(alphabet) for _ in range(2))
 
 
+def clean_code(code):
+    """Accepts a typed handwriting ID: trimmed, upper-cased, at most 16 characters."""
+    return "".join(str(code or "").split()).upper()[:16]
+
+
 def code_to_seed(code):
     return int.from_bytes(code.encode(), "big") % (2 ** 31)
 
@@ -72,7 +97,8 @@ def render_job(text, opts, font, out_dir):
     out.mkdir(parents=True, exist_ok=True)
     blocks = engine.parse_markup(text or "")
     if not any(b[0] != "blank" for b in blocks):
-        return 0
+        return {"count": 0, "missing": []}
+    missing = engine.missing_chars(blocks, font, opts.get("zh_font"))
     count = 0
 
     def save(page, n):
@@ -99,7 +125,7 @@ def render_job(text, opts, font, out_dir):
         engine.render_pages(blocks, font, **opts)
     finally:
         engine.finish = original_close
-    return count
+    return {"count": count, "missing": missing}
 
 
 class Api:
@@ -108,8 +134,10 @@ class Api:
     def __init__(self):
         self.text = ""
         self.job = 0
-        self.job_dir = None
+        self.job_dir = None   # the render in progress (for the progress counter)
+        self.done_dir = None  # the last render that finished; exports read only from here
         self.pages = 0
+        self.lock = threading.Lock()
         self.window = None
         self.pool = ProcessPoolExecutor(max_workers=1)
         WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -124,10 +152,9 @@ class Api:
             path.write_bytes(raw)
             text = engine.blocks_to_markup(engine.read_docx(str(path)))
         elif ext == ".pdf":
-            import pymupdf
-            doc = pymupdf.open(stream=raw, filetype="pdf")
-            text = "\n".join(line for page in doc for line in page.get_text().splitlines())
-            text = engine.join_cjk_lines(text)  # Chinese paragraphs come out broken at every printed line
+            text = engine.read_pdf(raw)
+            if not text.strip():
+                return {"error": "这个 PDF 里没有可选中的文字（可能是扫描件或图片），请换 Word 或文本文件"}
         else:
             # Chinese .txt files saved on Windows are often GBK rather than UTF-8
             for encoding in ("utf-8-sig", "gb18030"):
@@ -142,17 +169,40 @@ class Api:
         return {"text": text}
 
     def settings(self):
+        saved = load_config()
+        code = clean_code(saved.get("code")) or new_code()
+        if not saved.get("code"):  # keep the first ID from the start, so it never changes by itself
+            self.save_settings({"code": code, "options": saved.get("options") or {}})
         return {
             "fonts": [{"file": f, "name": n, "note": c} for f, n, c in FONTS],
             "zh_fonts": [{"file": f, "name": n, "note": c} for f, n, c in ZH_FONTS],
-            "code": new_code(),
+            "code": code,
+            "options": saved.get("options") if isinstance(saved.get("options"), dict) else {},
             "seed": random.randrange(1, 10 ** 6),
             "platform": sys.platform,
             "native": self.window is not None,
         }
 
+    def save_settings(self, data):
+        """Remembers the handwriting ID and the chosen options for the next launch."""
+        data = data if isinstance(data, dict) else {}
+        out = {"code": clean_code(data.get("code")),
+               "options": data.get("options") if isinstance(data.get("options"), dict) else {}}
+        path = config_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            return {"saved": False}
+        return {"saved": True}
+
     def new_code(self):
         return {"code": new_code()}
+
+    def check_code(self, code):
+        return {"code": clean_code(code)}
 
     # ---- rendering ------------------------------------------------------------------------
     def render(self, text, opts):
@@ -163,22 +213,25 @@ class Api:
         job_dir = WORK_DIR / f"job{job}"
         font = FONT_DIR / opts.get("font", FONTS[0][0])
         o = dict(opts)
-        o["habit_seed"] = code_to_seed(o.pop("code", "AAAA-AA"))
+        o["habit_seed"] = code_to_seed(clean_code(o.pop("code", "")) or "AAAA-AA")
         o.pop("font", None)
         zh = o.get("zh_font")
         o["zh_font"] = str(FONT_DIR / (zh if zh in {f for f, _, _ in ZH_FONTS} else ZH_FONTS[0][0]))
         self.job_dir = job_dir
-        count = self.pool.submit(render_job, text, o, str(font), str(job_dir)).result()
-        if job != self.job:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            return {"stale": True}
-        # the previous job's files are no longer needed
-        for old in WORK_DIR.glob("job*"):
-            if old != job_dir:
-                shutil.rmtree(old, ignore_errors=True)
-        self.text, self.pages = text, count
+        result = self.pool.submit(render_job, text, o, str(font), str(job_dir)).result()
+        count = result["count"]
+        with self.lock:  # exports hold this lock, so they never read a folder being removed
+            if job != self.job:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                return {"stale": True}
+            # the previous job's files are no longer needed
+            for old in WORK_DIR.glob("job*"):
+                if old != job_dir:
+                    shutil.rmtree(old, ignore_errors=True)
+            self.text, self.pages, self.done_dir = text, count, job_dir
         stamp = int(time.time() * 1000)
-        return {"count": count, "pages": [f"/preview/job{job}/page_{n}.jpg?t={stamp}" for n in range(1, count + 1)]}
+        return {"count": count, "missing": result["missing"],
+                "pages": [f"/preview/job{job}/page_{n}.jpg?t={stamp}" for n in range(1, count + 1)]}
 
     def progress(self):
         if self.job_dir is None or not self.job_dir.exists():
@@ -186,8 +239,14 @@ class Api:
         return {"pages": len(list(self.job_dir.glob("page_*.jpg")))}
 
     def _page_images(self):
+        """Loads the finished pages into memory (under the lock, so a render that finishes
+        meanwhile can't delete them half-read)."""
         from PIL import Image
-        return [Image.open(self.job_dir / f"page_{n}.png").convert("RGB") for n in range(1, self.pages + 1)]
+        with self.lock:
+            if not self.pages or self.done_dir is None:
+                raise RuntimeError("没有可导出的页面")
+            return [Image.open(self.done_dir / f"page_{n}.png").convert("RGB")
+                    for n in range(1, self.pages + 1)]
 
     # ---- export ---------------------------------------------------------------------------
     def pdf_bytes(self):
@@ -222,9 +281,10 @@ class Api:
         if not result:
             return {"cancelled": True}
         folder = Path(result if isinstance(result, str) else result[0])
-        for n in range(1, self.pages + 1):
-            shutil.copy(self.job_dir / f"page_{n}.png", folder / f"page_{n}.png")
-        return {"saved": str(folder), "count": self.pages}
+        with self.lock:
+            for n in range(1, self.pages + 1):
+                shutil.copy(self.done_dir / f"page_{n}.png", folder / f"page_{n}.png")
+            return {"saved": str(folder), "count": self.pages}
 
 
 # ---- local server -----------------------------------------------------------------------------

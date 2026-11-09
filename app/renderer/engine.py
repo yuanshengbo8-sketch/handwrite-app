@@ -820,6 +820,68 @@ def cjk_fonts_for(font, zh_font=None):
     return chosen + rest + [Path(p) for p in CJK_SYSTEM_FALLBACKS if Path(p).exists()]
 
 
+_CMAPS = {}
+
+
+def missing_chars(blocks, font, zh_font=None):
+    """Characters in the parsed blocks that no font the writer uses (the hand, its fallbacks and
+    the Chinese fonts) can write, so the app can say so instead of silently drawing boxes."""
+    covered = set()
+    for path in (Path(font), *fallbacks_for(font), *cjk_fonts_for(font, zh_font)):
+        key = str(path)
+        if key not in _CMAPS:
+            cmap = set(TTFont(key, fontNumber=0, lazy=True).getBestCmap())
+            _CMAPS[key] = cmap - {ord(c) for c in CJK_SKIP.get(path.name, ())}
+        covered |= _CMAPS[key]
+    text = "".join(t for _, t, _, _ in blocks)
+    return sorted({c for c in text if c not in CONTROL and not c.isspace() and ord(c) not in covered})
+
+
+_LIST_START = re.compile(r"[•·▪◦●○\-–*]\s|\(?\d{1,3}[.)、](?!\d)|\(?[a-zA-Z][.)]\s|\([ivxIVX]{1,4}\)|Q\d+\b|第.{1,4}[题问章节]")
+_CJK = re.compile(r"[\u2e80-\u9fff\uac00-\ud7af\uff00-\uffef]")
+
+
+def join_pdf_lines(lines):
+    """PDF text comes one printed line at a time. Joins the lines of one text block back into a
+    paragraph (mending words hyphenated across a line break, and leaving no space between
+    Chinese characters) and starts a new paragraph at list items, so rows aren't cut short
+    wherever the original page happened to wrap."""
+    paras, cur = [], ""
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            if cur:
+                paras.append(cur)
+            cur = ""
+            continue
+        if not cur:
+            cur = line
+        elif _LIST_START.match(line):
+            paras.append(cur)
+            cur = line
+        elif cur.endswith("-") and len(cur) > 1 and cur[-2].isalpha() and line[:1].islower():
+            cur = cur[:-1] + line
+        elif _CJK.match(cur[-1]) or _CJK.match(line[0]):
+            cur += line
+        else:
+            cur += " " + line
+    if cur:
+        paras.append(cur)
+    return paras
+
+
+def read_pdf(data):
+    """PDF bytes to editable markup: one paragraph per line, in reading order. Images are skipped."""
+    import pymupdf
+    out = []
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        for page in doc:
+            for block in page.get_text("blocks", sort=True):
+                if block[6] == 0:  # 0 is text, 1 is an image
+                    out.extend(join_pdf_lines(block[4].splitlines()))
+    return join_cjk_lines("\n".join(out))  # also mends Chinese paragraphs split across blocks or pages
+
+
 def paper_spec(kind):
     """Returns (xheight, text_left, text_right) in pixels for a paper kind."""
     margin, xh = PAPER_SPECS[kind]

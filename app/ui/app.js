@@ -55,7 +55,29 @@
     const n = OPTIONS[key].choices.length;
     state.index[key] = (state.index[key] + d + n) % n;
     paint(key);
+    saveSettings();
     scheduleRender();
+  }
+  // remembered between launches in a small settings file next to the app's other user data
+  let saveTimer = null;
+  function saveSettings() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const options = {};
+      for (const key of Object.keys(OPTIONS)) {
+        const choice = OPTIONS[key].choices[state.index[key]];
+        if (choice) options[key] = choice[0];
+      }
+      api.save_settings({ code: state.code, options });
+    }, 400);
+  }
+  function restoreOptions(saved) {
+    for (const [key, value] of Object.entries(saved || {})) {
+      const opt = OPTIONS[key];
+      if (!opt) continue;
+      const i = opt.choices.findIndex((c) => c[0] === value);
+      if (i >= 0) { state.index[key] = i; paint(key); }
+    }
   }
   function currentOpts() {
     const o = { code: state.code, seed: state.seed };
@@ -82,6 +104,7 @@
     img.classList.add("dim");
     $("spinner").classList.remove("hidden");
     $("spinner-text").textContent = "正在书写…";
+    $("btn-export").disabled = true;  // export only a finished version, never one half-written
     progressTimer = setInterval(async () => {
       const p = await api.progress();
       if (p.pages) $("spinner-text").textContent = `正在书写… 第 ${p.pages + 1} 页`;
@@ -93,15 +116,25 @@
         state.pages = r.pages;
         state.page = Math.min(state.page, Math.max(0, r.pages.length - 1));
         showPage();
-        $("btn-export").disabled = r.pages.length === 0;
+        warnMissing(r.missing || []);
       }
     } finally {
+      $("btn-export").disabled = pending || state.pages.length === 0;  // a queued render keeps it off
       clearInterval(progressTimer);
       rendering = false;
       img.classList.remove("dim");
       $("spinner").classList.add("hidden");
       if (pending) { pending = false; render(); }
     }
+  }
+  let lastMissing = "";
+  function warnMissing(chars) {
+    const key = chars.join("");
+    if (key === lastMissing) return;  // say it once, not on every option change
+    lastMissing = key;
+    if (!chars.length) return;
+    const shown = chars.slice(0, 20).join(" ") + (chars.length > 20 ? ` 等 ${chars.length} 个` : "");
+    toast(`没有字体写得出这些字，会显示不对：${shown}`, 7000);
   }
   function showPage() {
     const n = state.pages.length;
@@ -174,9 +207,21 @@
   // ---- identity & export ---------------------------------------------------------------------
   $("btn-code").addEventListener("click", async () => {
     state.code = (await api.new_code()).code;
-    $("code").textContent = state.code;
+    $("code").value = state.code;
+    saveSettings();
     scheduleRender(0);
   });
+  async function applyTypedCode() {
+    const code = (await api.check_code($("code").value)).code;
+    if (!code) { $("code").value = state.code; return; }  // empty: keep the current ID
+    $("code").value = code;
+    if (code === state.code) return;
+    state.code = code;
+    saveSettings();
+    scheduleRender(0);
+  }
+  $("code").addEventListener("change", applyTypedCode);
+  $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
   $("btn-shuffle").addEventListener("click", () => { state.seed = Math.floor(Math.random() * 1e6) + 1; scheduleRender(0); });
   $("btn-export").addEventListener("click", async () => {
     const r = await api.export_pdf(state.fileName + "-手写.pdf");
@@ -186,11 +231,11 @@
   });
 
   let toastTimer = null;
-  function toast(msg) {
+  function toast(msg, ms = 3200) {
     const t = $("toast");
     t.textContent = msg; t.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
+    toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
   }
 
   // ---- start ---------------------------------------------------------------------------------
@@ -204,8 +249,9 @@
     OPTIONS.zh_font.choices = s.zh_fonts.map((f) => [f.file, f.name, f.note]);
     state.index.zh_font = 0;
     paint("zh_font");
+    restoreOptions(s.options);
     state.code = s.code; state.seed = s.seed;
-    $("code").textContent = s.code;
+    $("code").value = s.code;
   })();
   setView("preview");
 })();
