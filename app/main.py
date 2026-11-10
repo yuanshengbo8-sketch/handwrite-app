@@ -34,6 +34,34 @@ else:
 UI_DIR, FONT_DIR = BASE / "ui", BASE / "fonts"
 WORK_DIR = Path(tempfile.gettempdir()) / f"handwrite-{os.getpid()}"
 
+APP_VERSION = "0.2.1"
+REPO = "yuanshengbo8-sketch/handwrite-app"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
+
+
+def parse_version(v):
+    """'v0.2.10' -> (0, 2, 10); anything unreadable sorts as oldest."""
+    parts = []
+    for p in str(v or "").strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in p if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) or (0,)
+
+
+def latest_release(timeout=8):
+    """Asks GitHub for the newest release: only the version number and its page, nothing is sent."""
+    import urllib.request
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                 headers={"Accept": "application/vnd.github+json",
+                                          "User-Agent": f"Handwrite/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return {"latest": str(data.get("tag_name") or "").lstrip("vV"),
+            "url": data.get("html_url") or RELEASES_URL,
+            "notes": str(data.get("body") or "")[:600]}
+
 
 def config_path():
     """Where the last-used options and handwriting ID are kept between launches."""
@@ -129,17 +157,21 @@ def render_job(text, opts, font, out_dir):
 
 
 class Api:
-    """Everything the page can call, over HTTP (and the two dialogs over the JS bridge)."""
+    """Everything the page can call, over HTTP (and the two dialogs over the JS bridge).
+
+    State is kept in underscore attributes on purpose: pywebview walks every public attribute
+    of the js_api object, and walking into the window from its own thread can hang the app.
+    """
 
     def __init__(self):
-        self.text = ""
-        self.job = 0
-        self.job_dir = None   # the render in progress (for the progress counter)
-        self.done_dir = None  # the last render that finished; exports read only from here
-        self.pages = 0
-        self.lock = threading.Lock()
-        self.window = None
-        self.pool = ProcessPoolExecutor(max_workers=1)
+        self._text = ""
+        self._job = 0
+        self._job_dir = None   # the render in progress (for the progress counter)
+        self._done_dir = None  # the last render that finished; exports read only from here
+        self._pages = 0
+        self._lock = threading.Lock()
+        self._window = None
+        self._pool = ProcessPoolExecutor(max_workers=1)
         WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- document -------------------------------------------------------------------------
@@ -165,7 +197,7 @@ class Api:
                     continue
             else:
                 text = raw.decode("utf-8", errors="replace")
-        self.text = text
+        self._text = text
         return {"text": text}
 
     def settings(self):
@@ -180,14 +212,17 @@ class Api:
             "options": saved.get("options") if isinstance(saved.get("options"), dict) else {},
             "seed": random.randrange(1, 10 ** 6),
             "platform": sys.platform,
-            "native": self.window is not None,
+            "native": self._window is not None,
+            "version": APP_VERSION,
+            "auto_update": saved.get("auto_update", True) is not False,
         }
 
     def save_settings(self, data):
-        """Remembers the handwriting ID and the chosen options for the next launch."""
+        """Remembers the handwriting ID, the chosen options and the update-check switch."""
         data = data if isinstance(data, dict) else {}
         out = {"code": clean_code(data.get("code")),
-               "options": data.get("options") if isinstance(data.get("options"), dict) else {}}
+               "options": data.get("options") if isinstance(data.get("options"), dict) else {},
+               "auto_update": data.get("auto_update", True) is not False}
         path = config_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,12 +239,33 @@ class Api:
     def check_code(self, code):
         return {"code": clean_code(code)}
 
+    # ---- updates --------------------------------------------------------------------------
+    def check_update(self):
+        """Compares this version with the newest release on GitHub."""
+        try:
+            info = latest_release()
+        except Exception:  # noqa: BLE001 - offline, blocked or rate-limited: just say so
+            return {"current": APP_VERSION, "error": "连不上 GitHub，稍后再试"}
+        self._release_url = info["url"]
+        newer = parse_version(info["latest"]) > parse_version(APP_VERSION)
+        return {"current": APP_VERSION, "latest": info["latest"], "newer": newer,
+                "notes": info["notes"] if newer else ""}
+
+    def open_release(self):
+        """Opens the download page in the default browser."""
+        url = getattr(self, "_release_url", None) or RELEASES_URL
+        if not url.startswith(f"https://github.com/{REPO}/"):
+            url = RELEASES_URL
+        import webbrowser
+        webbrowser.open(url)
+        return {"opened": url}
+
     # ---- rendering ------------------------------------------------------------------------
     def render(self, text, opts):
         """Renders in the worker process; returns preview URLs, or {"stale": true} if a newer
         render was requested while this one ran."""
-        self.job += 1
-        job = self.job
+        self._job += 1
+        job = self._job
         job_dir = WORK_DIR / f"job{job}"
         font = FONT_DIR / opts.get("font", FONTS[0][0])
         o = dict(opts)
@@ -217,36 +273,36 @@ class Api:
         o.pop("font", None)
         zh = o.get("zh_font")
         o["zh_font"] = str(FONT_DIR / (zh if zh in {f for f, _, _ in ZH_FONTS} else ZH_FONTS[0][0]))
-        self.job_dir = job_dir
-        result = self.pool.submit(render_job, text, o, str(font), str(job_dir)).result()
+        self._job_dir = job_dir
+        result = self._pool.submit(render_job, text, o, str(font), str(job_dir)).result()
         count = result["count"]
-        with self.lock:  # exports hold this lock, so they never read a folder being removed
-            if job != self.job:
+        with self._lock:  # exports hold this lock, so they never read a folder being removed
+            if job != self._job:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 return {"stale": True}
             # the previous job's files are no longer needed
             for old in WORK_DIR.glob("job*"):
                 if old != job_dir:
                     shutil.rmtree(old, ignore_errors=True)
-            self.text, self.pages, self.done_dir = text, count, job_dir
+            self._text, self._pages, self._done_dir = text, count, job_dir
         stamp = int(time.time() * 1000)
         return {"count": count, "missing": result["missing"],
                 "pages": [f"/preview/job{job}/page_{n}.jpg?t={stamp}" for n in range(1, count + 1)]}
 
     def progress(self):
-        if self.job_dir is None or not self.job_dir.exists():
+        if self._job_dir is None or not self._job_dir.exists():
             return {"pages": 0}
-        return {"pages": len(list(self.job_dir.glob("page_*.jpg")))}
+        return {"pages": len(list(self._job_dir.glob("page_*.jpg")))}
 
     def _page_images(self):
         """Loads the finished pages into memory (under the lock, so a render that finishes
         meanwhile can't delete them half-read)."""
         from PIL import Image
-        with self.lock:
-            if not self.pages or self.done_dir is None:
+        with self._lock:
+            if not self._pages or self._done_dir is None:
                 raise RuntimeError("没有可导出的页面")
-            return [Image.open(self.done_dir / f"page_{n}.png").convert("RGB")
-                    for n in range(1, self.pages + 1)]
+            return [Image.open(self._done_dir / f"page_{n}.png").convert("RGB")
+                    for n in range(1, self._pages + 1)]
 
     # ---- export ---------------------------------------------------------------------------
     def pdf_bytes(self):
@@ -256,12 +312,12 @@ class Api:
 
     def export_pdf(self, suggested="handwritten.pdf"):
         """Native mode: asks where to save and writes the PDF. (Browser mode downloads /export.pdf.)"""
-        if not self.pages:
+        if not self._pages:
             return {"error": "没有可导出的页面"}
-        if self.window is None:
+        if self._window is None:
             return {"download": "/export.pdf"}
         import webview
-        result = self.window.create_file_dialog(webview.FileDialog.SAVE, save_filename=suggested,
+        result = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=suggested,
                                                 file_types=("PDF (*.pdf)",))
         if not result:
             return {"cancelled": True}
@@ -272,19 +328,19 @@ class Api:
         return {"saved": path}
 
     def export_pngs(self):
-        if not self.pages:
+        if not self._pages:
             return {"error": "没有可导出的页面"}
-        if self.window is None:
+        if self._window is None:
             return {"error": "浏览器模式只支持导出 PDF"}
         import webview
-        result = self.window.create_file_dialog(webview.FileDialog.FOLDER)
+        result = self._window.create_file_dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"cancelled": True}
         folder = Path(result if isinstance(result, str) else result[0])
-        with self.lock:
-            for n in range(1, self.pages + 1):
-                shutil.copy(self.done_dir / f"page_{n}.png", folder / f"page_{n}.png")
-            return {"saved": str(folder), "count": self.pages}
+        with self._lock:
+            for n in range(1, self._pages + 1):
+                shutil.copy(self._done_dir / f"page_{n}.png", folder / f"page_{n}.png")
+            return {"saved": str(folder), "count": self._pages}
 
 
 # ---- local server -----------------------------------------------------------------------------
@@ -370,11 +426,11 @@ def run_native():
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     window = webview.create_window("Handwrite", url, js_api=api, width=1280, height=820,
                                    min_size=(960, 640), background_color="#f5f5f7")
-    api.window = window
+    api._window = window
     try:
         webview.start(debug="--debug" in sys.argv)
     finally:
-        api.pool.shutdown(cancel_futures=True)
+        api._pool.shutdown(cancel_futures=True)
         shutil.rmtree(WORK_DIR, ignore_errors=True)
 
 
