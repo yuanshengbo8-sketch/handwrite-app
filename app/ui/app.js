@@ -68,7 +68,7 @@
         const choice = OPTIONS[key].choices[state.index[key]];
         if (choice) options[key] = choice[0];
       }
-      api.save_settings({ code: state.code, options });
+      api.save_settings({ code: state.code, options, auto_update: autoUpdate });
     }, 400);
   }
   function restoreOptions(saved) {
@@ -238,6 +238,34 @@
     toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
   }
 
+  // ---- updates -------------------------------------------------------------------------------
+  let autoUpdate = true;
+  async function checkUpdate(manual) {
+    if (manual) { $("btn-check").disabled = true; $("update-status").textContent = "正在检查…"; }
+    const r = await api.check_update();
+    $("btn-check").disabled = false;
+    if (r.error) {
+      if (manual) $("update-status").textContent = r.error;
+      return;
+    }
+    if (r.newer) {
+      $("btn-update").textContent = `更新到 ${r.latest}`;
+      $("btn-update").classList.remove("hidden");
+      $("update-status").textContent = `有新版本 ${r.latest}，点右上角「更新到 ${r.latest}」打开下载页，下载后替换旧文件即可，设置和笔迹都会保留。`;
+      if (manual) toast(`有新版本 ${r.latest}`);
+    } else {
+      $("update-status").textContent = `已经是最新版本（${r.current}）。`;
+      if (manual) toast("已经是最新版本");
+    }
+  }
+  async function openRelease() {
+    const r = await api.open_release();
+    if (r.opened && !(window.pywebview && window.pywebview.api)) window.open(r.opened, "_blank");
+  }
+  $("btn-check").addEventListener("click", () => checkUpdate(true));
+  $("btn-update").addEventListener("click", openRelease);
+  $("auto-update").addEventListener("change", (e) => { autoUpdate = e.target.checked; saveSettings(); });
+
   // ---- start ---------------------------------------------------------------------------------
   buildSteppers();
   settingsLoaded = (async () => {
@@ -252,6 +280,10 @@
     restoreOptions(s.options);
     state.code = s.code; state.seed = s.seed;
     $("code").value = s.code;
+    $("version").textContent = `Handwrite ${s.version}`;
+    autoUpdate = s.auto_update !== false;
+    $("auto-update").checked = autoUpdate;
+    if (autoUpdate) setTimeout(() => checkUpdate(false), 1500);  // after the window is up
   })();
   setView("preview");
 })();

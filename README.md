@@ -1,10 +1,10 @@
 # Handwrite
 
 把 Word / PDF / 文本作业拖进来，变成像真人用圆珠笔写在纸上的 PDF。
-全程在你自己的电脑上完成，不联网、不上传。
+全程在你自己的电脑上完成，文件不会上传。唯一联网的是检查新版本，可以关掉。
 
 Drop a Word, PDF or text file; get pages that look hand-written with a ballpoint pen.
-Runs entirely offline.
+Everything runs on your computer; the only network call is an optional update check.
 
 ![英文、中文和不同纸笔设置的效果](docs/demo.png)
 
@@ -36,6 +36,10 @@ xattr -cr /Applications/Handwrite.app
 4. 「换一种笔迹」生成一套新的书写习惯（每个字母固定的倾斜和大小），「重新排一版」换一种排布。
    笔迹 ID 和右侧所有设置会自动记住，下次打开还是同一个人的字；也可以直接在 ID 框里填一个自己的 ID。
 5. 「导出 PDF」。要打印就把「扫描感」关掉。
+
+**更新**：打开时会向 GitHub 问一下最新版本号（只问版本号，不上传任何内容）。有新版本时右上角出现「更新到 x.x.x」，
+点它打开下载页，下载后替换旧文件即可，笔迹和设置都会保留。右侧最下面「版本」里可以手动「检查更新」，
+也可以取消「打开时自动检查」。
 
 中文、英文、中英混排都可以直接写：中文按字换行，标点不放行首，段首空两格。
 `.txt` 文件 UTF-8 和 GBK 都能读。字体里没有的生僻字会用电脑自带的楷体或雅黑补上。

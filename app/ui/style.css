@@ -75,6 +75,11 @@ button:disabled { opacity: 0.35; cursor: default; }
 .pill.ghost { background: transparent; color: var(--accent); }
 .pill.ghost:hover { background: var(--surface-2); }
 .pill.small { padding: 5px 12px; font-size: 12px; }
+.pill.update {
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  animation: rise .3s ease;
+}
+.pill.update:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .pill.wide { width: 100%; margin-top: 10px; }
 
 /* ---- stage ---- */
@@ -164,6 +169,12 @@ button:disabled { opacity: 0.35; cursor: default; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
 
 .code-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.about-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface); border-radius: 12px; padding: 8px 8px 8px 14px; font-size: 13px;
+}
+.switch-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin: 10px 4px 0; cursor: pointer; }
+.switch-row input { accent-color: var(--accent); margin: 0; }
 .code {
   font: 600 15px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: .06em;
   background: var(--surface); padding: 9px 12px; border-radius: 10px; flex: 1; text-align: center;

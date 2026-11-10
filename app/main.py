@@ -34,6 +34,34 @@ else:
 UI_DIR, FONT_DIR = BASE / "ui", BASE / "fonts"
 WORK_DIR = Path(tempfile.gettempdir()) / f"handwrite-{os.getpid()}"
 
+APP_VERSION = "0.2.1"
+REPO = "yuanshengbo8-sketch/handwrite-app"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
+
+
+def parse_version(v):
+    """'v0.2.10' -> (0, 2, 10); anything unreadable sorts as oldest."""
+    parts = []
+    for p in str(v or "").strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in p if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) or (0,)
+
+
+def latest_release(timeout=8):
+    """Asks GitHub for the newest release: only the version number and its page, nothing is sent."""
+    import urllib.request
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                 headers={"Accept": "application/vnd.github+json",
+                                          "User-Agent": f"Handwrite/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return {"latest": str(data.get("tag_name") or "").lstrip("vV"),
+            "url": data.get("html_url") or RELEASES_URL,
+            "notes": str(data.get("body") or "")[:600]}
+
 
 def config_path():
     """Where the last-used options and handwriting ID are kept between launches."""
@@ -185,13 +213,16 @@ class Api:
             "seed": random.randrange(1, 10 ** 6),
             "platform": sys.platform,
             "native": self._window is not None,
+            "version": APP_VERSION,
+            "auto_update": saved.get("auto_update", True) is not False,
         }
 
     def save_settings(self, data):
-        """Remembers the handwriting ID and the chosen options for the next launch."""
+        """Remembers the handwriting ID, the chosen options and the update-check switch."""
         data = data if isinstance(data, dict) else {}
         out = {"code": clean_code(data.get("code")),
-               "options": data.get("options") if isinstance(data.get("options"), dict) else {}}
+               "options": data.get("options") if isinstance(data.get("options"), dict) else {},
+               "auto_update": data.get("auto_update", True) is not False}
         path = config_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +238,27 @@ class Api:
 
     def check_code(self, code):
         return {"code": clean_code(code)}
+
+    # ---- updates --------------------------------------------------------------------------
+    def check_update(self):
+        """Compares this version with the newest release on GitHub."""
+        try:
+            info = latest_release()
+        except Exception:  # noqa: BLE001 - offline, blocked or rate-limited: just say so
+            return {"current": APP_VERSION, "error": "连不上 GitHub，稍后再试"}
+        self._release_url = info["url"]
+        newer = parse_version(info["latest"]) > parse_version(APP_VERSION)
+        return {"current": APP_VERSION, "latest": info["latest"], "newer": newer,
+                "notes": info["notes"] if newer else ""}
+
+    def open_release(self):
+        """Opens the download page in the default browser."""
+        url = getattr(self, "_release_url", None) or RELEASES_URL
+        if not url.startswith(f"https://github.com/{REPO}/"):
+            url = RELEASES_URL
+        import webbrowser
+        webbrowser.open(url)
+        return {"opened": url}
 
     # ---- rendering ------------------------------------------------------------------------
     def render(self, text, opts):

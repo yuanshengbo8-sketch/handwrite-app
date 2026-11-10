@@ -14,6 +14,7 @@
     <button data-view="text">文字</button>
   </div>
   <div class="bar-right">
+    <button class="pill update hidden" id="btn-update" title="打开下载页">新版本</button>
     <button class="pill ghost" id="btn-open">打开文件</button>
     <button class="pill primary" id="btn-export" disabled>导出 PDF</button>
   </div>
@@ -81,6 +82,15 @@
       </div>
       <button class="pill small ghost wide" id="btn-shuffle">重新排一版</button>
       <div class="hint">笔迹 ID 决定每个字（字母和汉字）的固定习惯，会一直记住。想和上次一样，就填回原来的 ID。</div>
+    </div>
+    <div class="group about">
+      <div class="group-title">版本</div>
+      <div class="about-row">
+        <span id="version">Handwrite</span>
+        <button class="pill small" id="btn-check">检查更新</button>
+      </div>
+      <label class="switch-row"><input type="checkbox" id="auto-update" checked> 打开时自动检查</label>
+      <div class="hint" id="update-status">只向 GitHub 问一下最新版本号，不会上传任何内容。</div>
     </div>
   </aside>
 </main>
