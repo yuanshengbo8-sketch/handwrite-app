@@ -34,7 +34,7 @@ else:
 UI_DIR, FONT_DIR = BASE / "ui", BASE / "fonts"
 WORK_DIR = Path(tempfile.gettempdir()) / f"handwrite-{os.getpid()}"
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 REPO = "yuanshengbo8-sketch/handwrite-app"
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 
