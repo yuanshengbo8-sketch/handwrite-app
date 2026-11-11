@@ -4,5 +4,6 @@ __pycache__/
 build/
 dist/
 *.spec
+!handwrite.spec
 .claude/
 _session-scratch/
